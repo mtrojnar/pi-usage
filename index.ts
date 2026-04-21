@@ -266,7 +266,6 @@ async function checkCodexUsage(token: string, accountId: string): Promise<CodexU
 				model: CODEX_PROBE_MODEL,
 				instructions: "Reply with just: ok",
 				input: [{ type: "message", role: "user", content: "hi" }],
-				max_output_tokens: 4,
 				store: false,
 				stream: true,
 			}),
@@ -434,6 +433,11 @@ function isPerModelUnavailable(status: number, message: string): boolean {
 	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
 }
 
+function isGlobalGoLimit(message: string): boolean {
+	if (/error from provider/i.test(message)) return false;
+	return /insufficient.*(credit|balance|fund)|balance.*insufficient|credits? exhausted|opencode.*(quota|limit)|go.*(quota|limit)|subscription.*(quota|limit)/i.test(message);
+}
+
 async function probeOpenCodeGoModel(apiKey: string, model: GoCheckModel, signal: AbortSignal): Promise<Response> {
 	if (model.api === "anthropic-messages") {
 		return fetch(model.endpoint, {
@@ -494,6 +498,7 @@ async function checkOpenCodeGoUsage(apiKey: string): Promise<OpenCodeGoUsage> {
 					available: true,
 					status: "available",
 					workingModel: model.id,
+					rateLimitedModel: lastRateLimit?.model,
 					checkedModels,
 					totalModels: models.length,
 				};
@@ -503,9 +508,7 @@ async function checkOpenCodeGoUsage(apiKey: string): Promise<OpenCodeGoUsage> {
 				const errorMsg = await readErrorMessage(response, "Rate limited");
 				lastRateLimit = { model: model.id, message: errorMsg };
 
-				// Global quota/usage limits apply across Go models, so probing more models
-				// would just burn time and noise.
-				if (/insufficient|quota|usage|limit|balance|credit/i.test(errorMsg)) {
+				if (isGlobalGoLimit(errorMsg)) {
 					return {
 						available: false,
 						status: "rate_limited",
