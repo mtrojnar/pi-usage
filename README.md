@@ -16,6 +16,7 @@ When pi starts up, **pi-usage** automatically:
    - Whether Go models are **available** or **rate limited**
    - Which specific model is working
    - Error details if credits are exhausted
+   - How many documented Go models were checked before a result was found
 
 Results are displayed as a **widget above the editor** with progress bars and color-coded status, plus a **footer status line** and a **notification** at startup.
 
@@ -51,19 +52,19 @@ Or add to your `settings.json`:
 
 ### Codex
 
-No additional setup needed — pi-usage reads the same OAuth token that the `openai-codex` provider uses (stored in `~/.pi/agent/auth.json` from `/login`).
+No additional setup needed — pi-usage reads the same OAuth token that the `openai-codex` provider uses (stored in `~/.pi/agent/auth.json` from `/login`) and refreshes it when expired.
 
 If you haven't set up Codex yet, run `/login` in pi and select the Codex provider.
 
 ### OpenCode Go
 
-Set the `OPENCODE_API_KEY` environment variable:
+Use `/connect` in pi and select `OpenCode Go`, or set the `OPENCODE_API_KEY` environment variable:
 
 ```bash
 export OPENCODE_API_KEY="your-key-here"
 ```
 
-This is the same key used by the `opencode-go` provider. If you're already using OpenCode Go models in pi, you already have this configured.
+This is the same key used by the `opencode-go` provider. pi-usage checks `~/.pi/agent/auth.json` first (`opencode-go`, then `opencode`) and falls back to `OPENCODE_API_KEY`.
 
 ## Usage
 
@@ -117,7 +118,9 @@ OpenCode Go does not currently expose a usage/balance API. pi-usage probes model
 - **429** → rate limited
 - **401/403** → credits error or auth issue
 
-It tries models in order (`glm-5.1`, `kimi-k2.5`, `qwen3.5-plus`) and stops at the first success or definitive error.
+It builds the probe list from OpenCode's documented Go models, then adds any extra `opencode-go` models from pi's installed registry. It tries cheaper models first and stops at the first success or definitive global quota/auth error.
+
+OpenCode Go's published limits are dollar-based (`$12` per 5 hours, `$30` per week, `$60` per month). There is no public API for the current remaining balance; OpenCode documents that current usage is tracked in the console. This extension therefore reports availability/limit blocking, not an exact percentage remaining for Go.
 
 ## Configuration
 

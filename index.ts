@@ -14,6 +14,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
+import { getModels } from "@mariozechner/pi-ai";
+import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
@@ -38,12 +41,37 @@ interface CodexUsage {
 }
 
 type GoModelStatus = "available" | "rate_limited" | "credits_error" | "error" | "no_key";
+type GoProbeApi = "openai-completions" | "anthropic-messages";
+
+interface AuthApiKeyCredential {
+	type?: "api_key";
+	key?: string;
+}
+
+interface CodexOAuthCredential {
+	type?: "oauth";
+	access?: string;
+	refresh?: string;
+	expires?: number;
+	accountId?: string;
+}
+
+type AuthJson = Record<string, AuthApiKeyCredential | CodexOAuthCredential | undefined>;
+
+interface GoCheckModel {
+	id: string;
+	api: GoProbeApi;
+	endpoint: string;
+	costRank: number;
+}
 
 interface OpenCodeGoUsage {
 	available: boolean;
 	status: GoModelStatus;
 	workingModel?: string;
 	rateLimitedModel?: string;
+	checkedModels?: number;
+	totalModels?: number;
 	errorMessage?: string;
 	error?: string;
 }
@@ -52,12 +80,53 @@ interface OpenCodeGoUsage {
 
 const WIDGET_ID = "pi-usage";
 const CHECK_TIMEOUT_MS = 15_000;
-const AUTO_REFRESH_MINUTES = 30;
+const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
+const CODEX_REFRESH_SKEW_MS = 60_000;
+const CODEX_PROBE_MODEL = "gpt-5.4-mini";
+
+// OpenCode Go publishes a fixed dollar limit, but no public usage/balance API.
+// These are used only as the probe fallback when the installed pi model registry
+// does not yet include a documented Go model.
+const DOCUMENTED_GO_MODELS: GoCheckModel[] = [
+	{ id: "qwen3.5-plus", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 1 },
+	{ id: "minimax-m2.5", api: "anthropic-messages", endpoint: "https://opencode.ai/zen/go/v1/messages", costRank: 2 },
+	{ id: "minimax-m2.7", api: "anthropic-messages", endpoint: "https://opencode.ai/zen/go/v1/messages", costRank: 3 },
+	{ id: "qwen3.6-plus", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 4 },
+	{ id: "mimo-v2-omni", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 5 },
+	{ id: "kimi-k2.5", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 6 },
+	{ id: "glm-5", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 7 },
+	{ id: "kimi-k2.6", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 8 },
+	{ id: "mimo-v2-pro", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 9 },
+	{ id: "glm-5.1", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 10 },
+];
 
 // ───────── Helpers ─────────
 
+function parseEnvInt(name: string, fallback: number): number {
+	const parsed = parseInt(process.env[name] ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function authJsonPath(): string {
 	return path.join(os.homedir(), ".pi/agent/auth.json");
+}
+
+function readAuthJson(): AuthJson | undefined {
+	try {
+		const authPath = authJsonPath();
+		if (!fs.existsSync(authPath)) return undefined;
+		return JSON.parse(fs.readFileSync(authPath, "utf8")) as AuthJson;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeAuthJson(auth: AuthJson): void {
+	const authPath = authJsonPath();
+	fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf8");
+	try {
+		fs.chmodSync(authPath, 0o600);
+	} catch { /* best effort on platforms without POSIX permissions */ }
 }
 
 function extractAccountId(token: string): string | undefined {
@@ -71,14 +140,40 @@ function extractAccountId(token: string): string | undefined {
 	}
 }
 
-function getCodexToken(): { token: string; accountId: string } | undefined {
+function resolveConfigValue(config: string): string | undefined {
+	if (config.startsWith("!")) {
+		try {
+			return execSync(config.slice(1), {
+				encoding: "utf8",
+				timeout: 10_000,
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim() || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return process.env[config] || config;
+}
+
+async function getCodexToken(): Promise<{ token: string; accountId: string } | undefined> {
 	try {
-		const authPath = authJsonPath();
-		if (!fs.existsSync(authPath)) return undefined;
-		const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
-		const codex = auth["openai-codex"];
+		const auth = readAuthJson();
+		if (!auth) return undefined;
+		const codex = auth["openai-codex"] as CodexOAuthCredential | undefined;
 		if (!codex?.access) return undefined;
-		const accountId = extractAccountId(codex.access);
+
+		if (codex.refresh && (!codex.expires || Date.now() + CODEX_REFRESH_SKEW_MS >= codex.expires)) {
+			const refreshed = await refreshOpenAICodexToken(codex.refresh);
+			const accountId = typeof refreshed.accountId === "string"
+				? refreshed.accountId
+				: extractAccountId(refreshed.access);
+			if (!accountId) return undefined;
+			auth["openai-codex"] = { type: "oauth", ...refreshed, accountId };
+			writeAuthJson(auth);
+			return { token: refreshed.access, accountId };
+		}
+
+		const accountId = codex.accountId ?? extractAccountId(codex.access);
 		if (!accountId) return undefined;
 		return { token: codex.access, accountId };
 	} catch {
@@ -87,7 +182,18 @@ function getCodexToken(): { token: string; accountId: string } | undefined {
 }
 
 function getOpenCodeApiKey(): string | undefined {
+	const auth = readAuthJson();
+	const goKey = getAuthApiKey(auth, "opencode-go");
+	if (goKey) return goKey;
+	const zenKey = getAuthApiKey(auth, "opencode");
+	if (zenKey) return zenKey;
 	return process.env.OPENCODE_API_KEY;
+}
+
+function getAuthApiKey(auth: AuthJson | undefined, provider: string): string | undefined {
+	const credential = auth?.[provider] as AuthApiKeyCredential | undefined;
+	if (credential?.type !== "api_key" || !credential.key) return undefined;
+	return resolveConfigValue(credential.key);
 }
 
 function formatDuration(seconds: number): string {
@@ -114,6 +220,16 @@ function usageColor(percent: number): string {
 	if (percent >= 90) return "error";
 	if (percent >= 70) return "warning";
 	return "success";
+}
+
+function parseHeaderNumber(value: string | undefined, fallback: number): number {
+	if (value === undefined) return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseHeaderBool(value: string | undefined): boolean {
+	return value?.toLowerCase() === "true";
 }
 
 function statusIcon(status: GoModelStatus): string {
@@ -147,9 +263,10 @@ async function checkCodexUsage(token: string, accountId: string): Promise<CodexU
 				"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
 			},
 			body: JSON.stringify({
-				model: "gpt-5.4-mini",
+				model: CODEX_PROBE_MODEL,
 				instructions: "Reply with just: ok",
 				input: [{ type: "message", role: "user", content: "hi" }],
+				max_output_tokens: 4,
 				store: false,
 				stream: true,
 			}),
@@ -177,45 +294,48 @@ async function checkCodexUsage(token: string, accountId: string): Promise<CodexU
 			return {
 				planType: getHeader("x-codex-plan-type") ?? "unknown",
 				activeLimit: getHeader("x-codex-active-limit") ?? "unknown",
-				primaryUsedPercent: parseFloat(getHeader("x-codex-primary-used-percent") ?? "0"),
-				secondaryUsedPercent: parseFloat(getHeader("x-codex-secondary-used-percent") ?? "0"),
-				primaryWindowMinutes: parseInt(getHeader("x-codex-primary-window-minutes") ?? "300", 10),
-				secondaryWindowMinutes: parseInt(getHeader("x-codex-secondary-window-minutes") ?? "10080", 10),
-				primaryResetAfterSeconds: parseInt(getHeader("x-codex-primary-reset-after-seconds") ?? "0", 10),
-				secondaryResetAfterSeconds: parseInt(getHeader("x-codex-secondary-reset-after-seconds") ?? "0", 10),
-				primaryResetAt: parseInt(getHeader("x-codex-primary-reset-at") ?? "0", 10),
-				secondaryResetAt: parseInt(getHeader("x-codex-secondary-reset-at") ?? "0", 10),
-				primaryOverSecondaryLimitPercent: parseFloat(getHeader("x-codex-primary-over-secondary-limit-percent") ?? "0"),
-				creditsHasCredits: getHeader("x-codex-credits-has-credits") === "True",
+				primaryUsedPercent: parseHeaderNumber(getHeader("x-codex-primary-used-percent"), 0),
+				secondaryUsedPercent: parseHeaderNumber(getHeader("x-codex-secondary-used-percent"), 0),
+				primaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-primary-window-minutes"), 300),
+				secondaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-secondary-window-minutes"), 10080),
+				primaryResetAfterSeconds: parseHeaderNumber(getHeader("x-codex-primary-reset-after-seconds"), 0),
+				secondaryResetAfterSeconds: parseHeaderNumber(getHeader("x-codex-secondary-reset-after-seconds"), 0),
+				primaryResetAt: parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0),
+				secondaryResetAt: parseHeaderNumber(getHeader("x-codex-secondary-reset-at"), 0),
+				primaryOverSecondaryLimitPercent: parseHeaderNumber(getHeader("x-codex-primary-over-secondary-limit-percent"), 0),
+				creditsHasCredits: parseHeaderBool(getHeader("x-codex-credits-has-credits")),
 				creditsBalance: getHeader("x-codex-credits-balance") ?? "",
-				creditsUnlimited: getHeader("x-codex-credits-unlimited") === "True",
+				creditsUnlimited: parseHeaderBool(getHeader("x-codex-credits-unlimited")),
 			};
 		}
 
 		// 429 = rate limited
 		if (response.status === 429) {
-			let resetAt = 0;
+			let resetAt = parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0);
 			try {
 				const body = await response.text();
 				const parsed = JSON.parse(body);
-				resetAt = parsed?.error?.resets_at ?? 0;
+				resetAt = parsed?.error?.resets_at ?? resetAt;
 			} catch { /* ignore */ }
 
 			return {
-				planType: "unknown",
-				activeLimit: "rate_limited",
-				primaryUsedPercent: 100,
-				secondaryUsedPercent: 100,
-				primaryWindowMinutes: 300,
-				secondaryWindowMinutes: 10080,
-				primaryResetAfterSeconds: resetAt ? Math.max(0, Math.round(resetAt - Date.now() / 1000)) : 0,
-				secondaryResetAfterSeconds: 0,
+				planType: getHeader("x-codex-plan-type") ?? "unknown",
+				activeLimit: getHeader("x-codex-active-limit") ?? "rate_limited",
+				primaryUsedPercent: parseHeaderNumber(getHeader("x-codex-primary-used-percent"), 100),
+				secondaryUsedPercent: parseHeaderNumber(getHeader("x-codex-secondary-used-percent"), 100),
+				primaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-primary-window-minutes"), 300),
+				secondaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-secondary-window-minutes"), 10080),
+				primaryResetAfterSeconds: parseHeaderNumber(
+					getHeader("x-codex-primary-reset-after-seconds"),
+					resetAt ? Math.max(0, Math.round(resetAt - Date.now() / 1000)) : 0,
+				),
+				secondaryResetAfterSeconds: parseHeaderNumber(getHeader("x-codex-secondary-reset-after-seconds"), 0),
 				primaryResetAt: resetAt,
-				secondaryResetAt: 0,
-				primaryOverSecondaryLimitPercent: 0,
-				creditsHasCredits: false,
-				creditsBalance: "",
-				creditsUnlimited: false,
+				secondaryResetAt: parseHeaderNumber(getHeader("x-codex-secondary-reset-at"), 0),
+				primaryOverSecondaryLimitPercent: parseHeaderNumber(getHeader("x-codex-primary-over-secondary-limit-percent"), 0),
+				creditsHasCredits: parseHeaderBool(getHeader("x-codex-credits-has-credits")),
+				creditsBalance: getHeader("x-codex-credits-balance") ?? "",
+				creditsUnlimited: parseHeaderBool(getHeader("x-codex-credits-unlimited")),
 				error: "Rate limited (429)",
 			};
 		}
@@ -268,96 +388,190 @@ async function checkCodexUsage(token: string, accountId: string): Promise<CodexU
 
 // ───────── OpenCode Go Usage Check ─────────
 
-const GO_CHECK_MODELS = ["glm-5.1", "kimi-k2.5", "qwen3.5-plus"];
+function resolveModelEndpoint(baseUrl: string, api: GoProbeApi): string {
+	const normalized = baseUrl.replace(/\/+$/, "");
+	if (api === "anthropic-messages") {
+		if (normalized.endsWith("/messages")) return normalized;
+		if (normalized.endsWith("/v1")) return `${normalized}/messages`;
+		return `${normalized}/v1/messages`;
+	}
+	if (normalized.endsWith("/chat/completions")) return normalized;
+	if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
+	return `${normalized}/v1/chat/completions`;
+}
+
+function getOpenCodeGoCheckModels(): GoCheckModel[] {
+	const modelsById = new Map<string, GoCheckModel>();
+	for (const model of DOCUMENTED_GO_MODELS) {
+		modelsById.set(model.id, model);
+	}
+	for (const model of getModels("opencode-go")) {
+		if (modelsById.has(model.id)) continue;
+		const api = model.api === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
+		const costRank = model.cost.input + model.cost.output + model.cost.cacheRead + model.cost.cacheWrite;
+		modelsById.set(model.id, {
+			id: model.id,
+			api,
+			endpoint: resolveModelEndpoint(model.baseUrl, api),
+			costRank,
+		});
+	}
+	return Array.from(modelsById.values()).sort((a, b) => a.costRank - b.costRank || a.id.localeCompare(b.id));
+}
+
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+	try {
+		const body = await response.text();
+		const parsed = JSON.parse(body);
+		return parsed?.error?.message ?? parsed?.message ?? parsed?.detail ?? fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+function isPerModelUnavailable(status: number, message: string): boolean {
+	if (status === 400 || status === 404 || status === 422) return true;
+	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
+}
+
+async function probeOpenCodeGoModel(apiKey: string, model: GoCheckModel, signal: AbortSignal): Promise<Response> {
+	if (model.api === "anthropic-messages") {
+		return fetch(model.endpoint, {
+			method: "POST",
+			headers: {
+				"x-api-key": apiKey,
+				"anthropic-version": "2023-06-01",
+				"anthropic-dangerous-direct-browser-access": "true",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				model: model.id,
+				messages: [{ role: "user", content: "hi" }],
+				max_tokens: 1,
+				stream: false,
+			}),
+			signal,
+		});
+	}
+
+	return fetch(model.endpoint, {
+		method: "POST",
+		headers: {
+			"Authorization": `Bearer ${apiKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model: model.id,
+			messages: [{ role: "user", content: "hi" }],
+			max_tokens: 1,
+		}),
+		signal,
+	});
+}
 
 async function checkOpenCodeGoUsage(apiKey: string): Promise<OpenCodeGoUsage> {
+	const models = getOpenCodeGoCheckModels();
+	let checkedModels = 0;
+	let lastRateLimit: { model: string; message: string } | undefined;
+	let lastUnavailable: { model: string; message: string } | undefined;
+
 	try {
-		for (const model of GO_CHECK_MODELS) {
+		for (const model of models) {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+			checkedModels += 1;
 
-			const response = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					"Authorization": `Bearer ${apiKey}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					model,
-					messages: [{ role: "user", content: "hi" }],
-					max_tokens: 1,
-				}),
-				signal: controller.signal,
-			});
-
-			clearTimeout(timeout);
+			let response: Response;
+			try {
+				response = await probeOpenCodeGoModel(apiKey, model, controller.signal);
+			} finally {
+				clearTimeout(timeout);
+			}
 
 			if (response.ok) {
 				try { await response.text(); } catch { /* ignore */ }
-				return { available: true, status: "available", workingModel: model };
+				return {
+					available: true,
+					status: "available",
+					workingModel: model.id,
+					checkedModels,
+					totalModels: models.length,
+				};
 			}
 
 			if (response.status === 429) {
-				let errorMsg = "Rate limited";
-				try {
-					const body = await response.text();
-					const parsed = JSON.parse(body);
-					errorMsg = parsed?.error?.message ?? errorMsg;
-				} catch { /* ignore */ }
+				const errorMsg = await readErrorMessage(response, "Rate limited");
+				lastRateLimit = { model: model.id, message: errorMsg };
 
-				// If it's a global quota error, no point trying other models
-				if (errorMsg.includes("Insufficient") || errorMsg.includes("quota")) {
+				// Global quota/usage limits apply across Go models, so probing more models
+				// would just burn time and noise.
+				if (/insufficient|quota|usage|limit|balance|credit/i.test(errorMsg)) {
 					return {
 						available: false,
 						status: "rate_limited",
-						rateLimitedModel: model,
+						rateLimitedModel: model.id,
+						checkedModels,
+						totalModels: models.length,
 						errorMessage: errorMsg,
 					};
 				}
-				// Otherwise try next model
 				continue;
 			}
 
 			if (response.status === 401 || response.status === 403) {
-				let errorMsg = "Authentication error";
-				try {
-					const body = await response.text();
-					const parsed = JSON.parse(body);
-					if (parsed?.error?.type === "CreditsError" || parsed?.type === "error") {
-						const msg = parsed?.error?.message ?? parsed?.error?.error?.message;
-						return {
-							available: false,
-							status: "credits_error",
-							errorMessage: msg ?? "Credits exhausted",
-						};
-					}
-					errorMsg = parsed?.error?.message ?? errorMsg;
-				} catch { /* ignore */ }
-
-				return { available: false, status: "error", errorMessage: errorMsg };
+				const errorMsg = await readErrorMessage(response, "Authentication error");
+				const status: GoModelStatus = /credit|balance|quota|insufficient/i.test(errorMsg)
+					? "credits_error"
+					: "error";
+				return {
+					available: false,
+					status,
+					checkedModels,
+					totalModels: models.length,
+					errorMessage: errorMsg,
+				};
 			}
 
-			// Other error
-			let errorMsg = `HTTP ${response.status}`;
-			try {
-				const body = await response.text();
-				const parsed = JSON.parse(body);
-				errorMsg = parsed?.error?.message ?? errorMsg;
-			} catch { /* ignore */ }
+			const errorMsg = await readErrorMessage(response, `HTTP ${response.status}`);
+			if (isPerModelUnavailable(response.status, errorMsg)) {
+				lastUnavailable = { model: model.id, message: errorMsg };
+				continue;
+			}
 
-			return { available: false, status: "error", errorMessage: errorMsg };
+			return {
+				available: false,
+				status: "error",
+				checkedModels,
+				totalModels: models.length,
+				errorMessage: `${model.id}: ${errorMsg}`,
+			};
 		}
 
-		// All models rate limited
+		if (lastRateLimit) {
+			return {
+				available: false,
+				status: "rate_limited",
+				rateLimitedModel: lastRateLimit.model,
+				checkedModels,
+				totalModels: models.length,
+				errorMessage: lastRateLimit.message,
+			};
+		}
+
+		const suffix = lastUnavailable ? ` Last: ${lastUnavailable.model}: ${lastUnavailable.message}` : "";
 		return {
 			available: false,
-			status: "rate_limited",
-			errorMessage: "All Go models rate limited",
+			status: "error",
+			checkedModels,
+			totalModels: models.length,
+			errorMessage: `No documented Go models were available.${suffix}`,
 		};
 	} catch (e: unknown) {
 		return {
 			available: false,
 			status: "error",
+			checkedModels,
+			totalModels: models.length,
 			error: e instanceof Error ? e.message : String(e),
 		};
 	}
@@ -456,6 +670,9 @@ function buildUsageWidget(
 		if (go.workingModel) {
 			lines.push(`  ${theme.fg("dim", `working: ${go.workingModel}`)}`);
 		}
+		if (go.checkedModels && go.totalModels) {
+			lines.push(`  ${theme.fg("dim", `checked: ${go.checkedModels}/${go.totalModels} Go models`)}`);
+		}
 		if (go.rateLimitedModel) {
 			lines.push(`  ${theme.fg("warning", `limited: ${go.rateLimitedModel}`)}`);
 		}
@@ -520,7 +737,7 @@ export default function (pi: ExtensionAPI) {
 		const checks: Promise<void>[] = [];
 
 		// Check Codex
-		const codexAuth = getCodexToken();
+		const codexAuth = await getCodexToken();
 		if (codexAuth) {
 			checks.push(
 				checkCodexUsage(codexAuth.token, codexAuth.accountId).then((result) => {
