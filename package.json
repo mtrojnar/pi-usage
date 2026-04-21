@@ -41,9 +41,9 @@
     "check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.67.68",
-    "@mariozechner/pi-ai": "^0.67.68",
-    "@mariozechner/pi-tui": "^0.67.68",
+    "@mariozechner/pi-ai": "^0.68.0",
+    "@mariozechner/pi-coding-agent": "^0.68.0",
+    "@mariozechner/pi-tui": "^0.68.0",
     "@sinclair/typebox": "^0.34.44",
     "@types/node": "^24.3.0",
     "typescript": "^5.7.3"

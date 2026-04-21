@@ -58,13 +58,21 @@ If you haven't set up Codex yet, run `/login` in pi and select the Codex provide
 
 ### OpenCode Go
 
-Use `/connect` in pi and select `OpenCode Go`, or set the `OPENCODE_API_KEY` environment variable:
+Current pi releases include OpenCode Go as a built-in provider (`opencode-go`), so the old `pi-opencode` extension is not required.
+
+Configure OpenCode Go the same way pi does: set the `OPENCODE_API_KEY` environment variable, or store a key in `~/.pi/agent/auth.json` under `opencode-go`:
 
 ```bash
 export OPENCODE_API_KEY="your-key-here"
 ```
 
-This is the same key used by the `opencode-go` provider. pi-usage checks `~/.pi/agent/auth.json` first (`opencode-go`, then `opencode`) and falls back to `OPENCODE_API_KEY`.
+```json
+{
+  "opencode-go": { "type": "api_key", "key": "your-key-here" }
+}
+```
+
+`pi-usage` checks `~/.pi/agent/auth.json` first (`opencode-go`, then `opencode`) and falls back to `OPENCODE_API_KEY`.
 
 ## Usage
 
