@@ -13,8 +13,8 @@ When pi starts up, **pi-usage** automatically:
    - Plan type, active limit, and credits info
 
 2. **OpenCode Go** — Checks the dashboard quota first, then probes Go models only if dashboard scraping is not configured or fails. It shows:
-   - **Monthly usage percentage** from the OpenCode Go dashboard, when configured
-   - Monthly reset time
+   - **Rolling, weekly, and monthly usage percentages** from the OpenCode Go dashboard, when configured
+   - Reset times for all dashboard quota windows
    - Whether Go models are **available** or **rate limited**
    - Which specific model is working
    - Error details if credits are exhausted
@@ -76,7 +76,7 @@ export OPENCODE_API_KEY="your-key-here"
 
 `pi-usage` checks `~/.pi/agent/auth.json` first (`opencode-go`, then `opencode`) and falls back to `OPENCODE_API_KEY`.
 
-For the monthly usage percentage, pi-usage can also read the OpenCode Go dashboard. This needs your OpenCode workspace id and the `auth` cookie from your browser session:
+For the rolling, weekly, and monthly usage percentages, pi-usage can also read the OpenCode Go dashboard. This needs your OpenCode workspace id and the `auth` cookie from your browser session:
 
 ```bash
 export OPENCODE_GO_WORKSPACE_ID="your-workspace-id"
@@ -128,7 +128,9 @@ Codex (plus) [premium]
   week  ████████████░░░░░░░░ 62% resets in 3.8d
 ────────────────────────────────────────
 ✓ OpenCode Go — available
-  month ████████████░░░░░░░░ 60% used / 40% left resets 12.4d
+  rolling ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets 3.2h
+  week    ████████░░░░░░░░░░░░ 40% used / 60% left resets 4.8d
+  month   ████████████░░░░░░░░ 60% used / 40% left resets 12.4d
   working: glm-5.1
 ```
 
@@ -158,7 +160,7 @@ The fallback makes a **minimal streaming request** (model: `gpt-5.4-mini`, instr
 
 ### OpenCode Go
 
-OpenCode Go does not currently expose a public usage/balance API. pi-usage scrapes the authenticated dashboard page at `https://opencode.ai/workspace/<workspaceId>/go` and parses the embedded monthly quota data when `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE` are configured.
+OpenCode Go does not currently expose a public usage/balance API. pi-usage scrapes the authenticated dashboard page at `https://opencode.ai/workspace/<workspaceId>/go` and parses the embedded `rollingUsage`, `weeklyUsage`, and `monthlyUsage` quota data when `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE` are configured.
 
 If the dashboard scrape is not configured or fails, pi-usage falls back to probing models with minimal requests (`max_tokens: 1`) and checking for:
 - **200 OK** → model is available
@@ -174,7 +176,7 @@ It builds the probe list from OpenCode's documented Go models, then adds any ext
 | `PI_USAGE_REFRESH_MIN` | `30` | Auto-refresh interval in minutes |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
-| `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for monthly quota scraping |
+| `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |
 | `OPENCODE_GO_QUOTA_CONFIG` | unset | Optional explicit path to an `opencode-go.json` quota config file |
 
 ## License

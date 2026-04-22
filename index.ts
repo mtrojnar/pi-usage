@@ -81,6 +81,14 @@ interface OpenCodeGoUsage {
 	totalModels?: number;
 	quotaConfigured?: boolean;
 	quotaSource?: string;
+	rollingUsedPercent?: number;
+	rollingRemainingPercent?: number;
+	rollingResetAfterSeconds?: number;
+	rollingResetAt?: number;
+	weeklyUsedPercent?: number;
+	weeklyRemainingPercent?: number;
+	weeklyResetAfterSeconds?: number;
+	weeklyResetAt?: number;
 	monthlyUsedPercent?: number;
 	monthlyRemainingPercent?: number;
 	monthlyResetAfterSeconds?: number;
@@ -104,6 +112,14 @@ interface OpenCodeGoQuotaConfigState {
 interface OpenCodeGoQuotaResult {
 	configured: boolean;
 	source?: string;
+	rollingUsedPercent?: number;
+	rollingRemainingPercent?: number;
+	rollingResetAfterSeconds?: number;
+	rollingResetAt?: number;
+	weeklyUsedPercent?: number;
+	weeklyRemainingPercent?: number;
+	weeklyResetAfterSeconds?: number;
+	weeklyResetAt?: number;
 	monthlyUsedPercent?: number;
 	monthlyRemainingPercent?: number;
 	monthlyResetAfterSeconds?: number;
@@ -647,35 +663,48 @@ function clampPercent(percent: number): number {
 	return Math.max(0, Math.min(100, percent));
 }
 
-function parseOpenCodeGoMonthlyUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> | undefined {
-	const patterns: Array<{ regex: RegExp; usageIndex: number; resetIndex: number }> = [
-		{
-			regex: /monthlyUsage:\$R\[\d+\]=\{[^}]*usagePercent:(\d+(?:\.\d+)?)[^}]*resetInSec:(\d+(?:\.\d+)?)[^}]*\}/,
-			usageIndex: 1,
-			resetIndex: 2,
-		},
-		{
-			regex: /monthlyUsage:\$R\[\d+\]=\{[^}]*resetInSec:(\d+(?:\.\d+)?)[^}]*usagePercent:(\d+(?:\.\d+)?)[^}]*\}/,
-			usageIndex: 2,
-			resetIndex: 1,
-		},
-	];
+function parseOpenCodeGoUsageWindow(
+	html: string,
+	key: "rolling" | "weekly" | "monthly",
+): { usedPercent: number; remainingPercent: number; resetAfterSeconds: number; resetAt: number } | undefined {
+	const objectMatch = new RegExp(`${key}Usage:\\$R\\[\\d+\\]=\\{([^}]*)\\}`).exec(html);
+	const body = objectMatch?.[1];
+	if (!body) return undefined;
 
-	for (const pattern of patterns) {
-		const match = pattern.regex.exec(html);
-		if (!match) continue;
+	const usageMatch = /usagePercent:(\d+(?:\.\d+)?)/.exec(body);
+	if (!usageMatch) return undefined;
 
-		const monthlyUsedPercent = clampPercent(Number(match[pattern.usageIndex]));
-		const monthlyResetAfterSeconds = Math.max(0, Math.round(Number(match[pattern.resetIndex])));
-		return {
-			monthlyUsedPercent,
-			monthlyRemainingPercent: clampPercent(100 - monthlyUsedPercent),
-			monthlyResetAfterSeconds,
-			monthlyResetAt: Math.round(Date.now() / 1000) + monthlyResetAfterSeconds,
-		};
-	}
+	const usedPercent = clampPercent(Number(usageMatch[1]));
+	const resetMatch = /resetInSec:(\d+(?:\.\d+)?)/.exec(body);
+	const resetAfterSeconds = resetMatch ? Math.max(0, Math.round(Number(resetMatch[1]))) : 0;
+	return {
+		usedPercent,
+		remainingPercent: clampPercent(100 - usedPercent),
+		resetAfterSeconds,
+		resetAt: resetAfterSeconds > 0 ? Math.round(Date.now() / 1000) + resetAfterSeconds : 0,
+	};
+}
 
-	return undefined;
+function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> | undefined {
+	const rolling = parseOpenCodeGoUsageWindow(html, "rolling");
+	const weekly = parseOpenCodeGoUsageWindow(html, "weekly");
+	const monthly = parseOpenCodeGoUsageWindow(html, "monthly");
+	if (!rolling && !weekly && !monthly) return undefined;
+
+	return {
+		rollingUsedPercent: rolling?.usedPercent,
+		rollingRemainingPercent: rolling?.remainingPercent,
+		rollingResetAfterSeconds: rolling?.resetAfterSeconds,
+		rollingResetAt: rolling?.resetAt,
+		weeklyUsedPercent: weekly?.usedPercent,
+		weeklyRemainingPercent: weekly?.remainingPercent,
+		weeklyResetAfterSeconds: weekly?.resetAfterSeconds,
+		weeklyResetAt: weekly?.resetAt,
+		monthlyUsedPercent: monthly?.usedPercent,
+		monthlyRemainingPercent: monthly?.remainingPercent,
+		monthlyResetAfterSeconds: monthly?.resetAfterSeconds,
+		monthlyResetAt: monthly?.resetAt,
+	};
 }
 
 async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<OpenCodeGoQuotaResult> {
@@ -704,7 +733,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 		}
 
 		const html = await response.text();
-		const parsed = parseOpenCodeGoMonthlyUsage(html);
+		const parsed = parseOpenCodeGoDashboardUsage(html);
 		if (!parsed) {
 			return {
 				configured: true,
@@ -944,13 +973,31 @@ async function checkOpenCodeGoUsage(
 	quotaState: OpenCodeGoQuotaConfigState,
 ): Promise<OpenCodeGoUsage> {
 	const quotaCheck = await checkOpenCodeGoQuota(quotaState);
-	if (quotaCheck.monthlyUsedPercent !== undefined) {
-		const quotaExhausted = quotaCheck.monthlyUsedPercent >= 100;
+	if (
+		quotaCheck.rollingUsedPercent !== undefined ||
+		quotaCheck.weeklyUsedPercent !== undefined ||
+		quotaCheck.monthlyUsedPercent !== undefined
+	) {
+		const quotaExhausted = (
+			quotaCheck.rollingUsedPercent !== undefined && quotaCheck.rollingUsedPercent >= 100
+		) || (
+			quotaCheck.weeklyUsedPercent !== undefined && quotaCheck.weeklyUsedPercent >= 100
+		) || (
+			quotaCheck.monthlyUsedPercent !== undefined && quotaCheck.monthlyUsedPercent >= 100
+		);
 		return {
 			available: !quotaExhausted,
 			status: quotaExhausted ? "rate_limited" : "available",
 			quotaConfigured: quotaCheck.configured,
 			quotaSource: quotaCheck.source,
+			rollingUsedPercent: quotaCheck.rollingUsedPercent,
+			rollingRemainingPercent: quotaCheck.rollingRemainingPercent,
+			rollingResetAfterSeconds: quotaCheck.rollingResetAfterSeconds,
+			rollingResetAt: quotaCheck.rollingResetAt,
+			weeklyUsedPercent: quotaCheck.weeklyUsedPercent,
+			weeklyRemainingPercent: quotaCheck.weeklyRemainingPercent,
+			weeklyResetAfterSeconds: quotaCheck.weeklyResetAfterSeconds,
+			weeklyResetAt: quotaCheck.weeklyResetAt,
 			monthlyUsedPercent: quotaCheck.monthlyUsedPercent,
 			monthlyRemainingPercent: quotaCheck.monthlyRemainingPercent,
 			monthlyResetAfterSeconds: quotaCheck.monthlyResetAfterSeconds,
@@ -964,6 +1011,14 @@ async function checkOpenCodeGoUsage(
 		...modelCheck,
 		quotaConfigured: quotaCheck.configured,
 		quotaSource: quotaCheck.source,
+		rollingUsedPercent: quotaCheck.rollingUsedPercent,
+		rollingRemainingPercent: quotaCheck.rollingRemainingPercent,
+		rollingResetAfterSeconds: quotaCheck.rollingResetAfterSeconds,
+		rollingResetAt: quotaCheck.rollingResetAt,
+		weeklyUsedPercent: quotaCheck.weeklyUsedPercent,
+		weeklyRemainingPercent: quotaCheck.weeklyRemainingPercent,
+		weeklyResetAfterSeconds: quotaCheck.weeklyResetAfterSeconds,
+		weeklyResetAt: quotaCheck.weeklyResetAt,
 		monthlyUsedPercent: quotaCheck.monthlyUsedPercent,
 		monthlyRemainingPercent: quotaCheck.monthlyRemainingPercent,
 		monthlyResetAfterSeconds: quotaCheck.monthlyResetAfterSeconds,
@@ -1077,19 +1132,43 @@ function buildUsageWidget(
 			no_key: "no key",
 		};
 		lines.push(`${theme.fg(goColor, `${icon} OpenCode Go`)} ${theme.fg("dim", "— " + statusText[go.status])}`);
-		if (go.monthlyUsedPercent !== undefined) {
-			const monthlyColor = usageColor(go.monthlyUsedPercent);
-			const monthlyBar = progressBar(go.monthlyUsedPercent);
-			const reset = go.monthlyResetAt
-				? ` resets ${formatResetTime(go.monthlyResetAt)}`
-				: go.monthlyResetAfterSeconds !== undefined
-					? ` resets in ${formatDuration(go.monthlyResetAfterSeconds)}`
+		const goWindows = [
+			{
+				label: "rolling",
+				used: go.rollingUsedPercent,
+				remaining: go.rollingRemainingPercent,
+				resetAt: go.rollingResetAt,
+				resetAfterSeconds: go.rollingResetAfterSeconds,
+			},
+			{
+				label: "week",
+				used: go.weeklyUsedPercent,
+				remaining: go.weeklyRemainingPercent,
+				resetAt: go.weeklyResetAt,
+				resetAfterSeconds: go.weeklyResetAfterSeconds,
+			},
+			{
+				label: "month",
+				used: go.monthlyUsedPercent,
+				remaining: go.monthlyRemainingPercent,
+				resetAt: go.monthlyResetAt,
+				resetAfterSeconds: go.monthlyResetAfterSeconds,
+			},
+		];
+		for (const window of goWindows) {
+			if (window.used === undefined) continue;
+			const windowColor = usageColor(window.used);
+			const windowBar = progressBar(window.used);
+			const reset = window.resetAt
+				? ` resets ${formatResetTime(window.resetAt)}`
+				: window.resetAfterSeconds !== undefined
+					? ` resets in ${formatDuration(window.resetAfterSeconds)}`
 					: "";
-			const remaining = go.monthlyRemainingPercent !== undefined
-				? ` / ${go.monthlyRemainingPercent.toFixed(0)}% left`
+			const remaining = window.remaining !== undefined
+				? ` / ${window.remaining.toFixed(0)}% left`
 				: "";
 			lines.push(
-				`  month ${theme.fg(monthlyColor, monthlyBar)} ${theme.fg(monthlyColor, `${go.monthlyUsedPercent.toFixed(0)}% used`)}${theme.fg("dim", remaining + reset)}`,
+				`  ${window.label.padEnd(7)} ${theme.fg(windowColor, windowBar)} ${theme.fg(windowColor, `${window.used.toFixed(0)}% used`)}${theme.fg("dim", remaining + reset)}`,
 			);
 		}
 		if (go.quotaError) {
@@ -1120,6 +1199,14 @@ function buildUsageWidget(
 
 // ───────── Status Line ─────────
 
+function goFooterSummary(go: OpenCodeGoUsage): string {
+	const quotaParts: string[] = [];
+	if (go.rollingUsedPercent !== undefined) quotaParts.push(`${go.rollingUsedPercent.toFixed(0)}%r`);
+	if (go.weeklyUsedPercent !== undefined) quotaParts.push(`${go.weeklyUsedPercent.toFixed(0)}%w`);
+	if (go.monthlyUsedPercent !== undefined) quotaParts.push(`${go.monthlyUsedPercent.toFixed(0)}%m`);
+	return quotaParts.length > 0 ? quotaParts.join("/") : statusIcon(go.status);
+}
+
 function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
 	if (!ctx.hasUI) return;
 
@@ -1128,11 +1215,7 @@ function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCod
 		parts.push(`Codex:${codex!.primaryUsedPercent.toFixed(0)}%/${codex!.secondaryUsedPercent.toFixed(0)}%`);
 	}
 	if (go) {
-		if (go.monthlyUsedPercent !== undefined) {
-			parts.push(`Go:${go.monthlyUsedPercent.toFixed(0)}%m`);
-		} else {
-			parts.push(`Go:${statusIcon(go.status)}`);
-		}
+		parts.push(`Go:${goFooterSummary(go)}`);
 	}
 	if (parts.length > 0) {
 		ctx.ui.setStatus("pi-usage", `⚡ ${parts.join(" │ ")}`);
@@ -1213,11 +1296,7 @@ export default function (pi: ExtensionAPI) {
 				parts.push(`Codex: ✗ ${codexUsage.error.substring(0, 30)}`);
 			}
 			if (goUsage) {
-				if (goUsage.monthlyUsedPercent !== undefined) {
-					parts.push(`Go month:${goUsage.monthlyUsedPercent.toFixed(0)}%`);
-				} else {
-					parts.push(`Go: ${statusIcon(goUsage.status)}`);
-				}
+				parts.push(`Go:${goFooterSummary(goUsage)}`);
 			}
 			if (parts.length > 0) {
 				ctx.ui.notify(`⚡ ${parts.join(" │ ")}`, "info");
