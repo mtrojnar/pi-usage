@@ -162,8 +162,13 @@ function parseEnvInt(name: string, fallback: number): number {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function agentDir(): string {
+	const dir = process.env.PI_CODING_AGENT_DIR || "~/.pi/agent";
+	return dir.startsWith("~") ? path.join(os.homedir(), dir.slice(1)) : dir;
+}
+
 function authJsonPath(): string {
-	return path.join(os.homedir(), ".pi/agent/auth.json");
+	return path.join(agentDir(), "auth.json");
 }
 
 function readAuthJson(): AuthJson | undefined {
