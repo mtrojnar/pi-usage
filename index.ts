@@ -1222,7 +1222,8 @@ function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCod
 
 	const parts: string[] = [];
 	if (codexUsageHasData(codex)) {
-		parts.push(`Codex:${codex!.primaryUsedPercent.toFixed(0)}%/${codex!.secondaryUsedPercent.toFixed(0)}%`);
+		const limited = codex.activeLimit === "rate_limited" ? " limited" : "";
+		parts.push(`Codex${limited}:${codex.primaryUsedPercent.toFixed(0)}%/${codex.secondaryUsedPercent.toFixed(0)}%`);
 	}
 	if (go) {
 		parts.push(`Go:${goFooterSummary(go)}`);
@@ -1301,7 +1302,8 @@ export default function (pi: ExtensionAPI) {
 			// Quick notification
 			const parts: string[] = [];
 			if (codexUsageHasData(codexUsage)) {
-				parts.push(`Codex 5hr:${codexUsage!.primaryUsedPercent.toFixed(0)}% week:${codexUsage!.secondaryUsedPercent.toFixed(0)}%`);
+				const limited = codexUsage.activeLimit === "rate_limited" ? " limited" : "";
+				parts.push(`Codex${limited} 5hr:${codexUsage.primaryUsedPercent.toFixed(0)}% week:${codexUsage.secondaryUsedPercent.toFixed(0)}%`);
 			} else if (codexUsage?.error) {
 				parts.push(`Codex: ✗ ${codexUsage.error.substring(0, 30)}`);
 			}
