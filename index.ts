@@ -275,6 +275,8 @@ function extractAccountId(token: string): string | undefined {
 }
 
 function resolveConfigValue(config: string): string | undefined {
+	// Shell-exec prefix: "!command" runs command to retrieve dynamic secrets.
+	// Only exploitable if attacker already has write access to auth.json.
 	if (config.startsWith("!")) {
 		try {
 			return execSync(config.slice(1), {
@@ -286,7 +288,9 @@ function resolveConfigValue(config: string): string | undefined {
 			return undefined;
 		}
 	}
-	return process.env[config] || config;
+	// Treat value as env var name, fall back to literal string.
+	const resolved = process.env[config];
+	return resolved !== undefined ? resolved : config;
 }
 
 async function getCodexToken(): Promise<{ token: string; accountId: string; sourceKey: OpenAIOAuthSourceKey } | undefined> {
