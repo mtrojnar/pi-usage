@@ -1138,6 +1138,139 @@ async function checkOpenCodeGoUsage(
 
 // ───────── Widget Rendering ─────────
 
+function renderCodexWindows(codex: CodexUsage, fmt: (color: string, text: string) => string, useColor: boolean): string[] {
+	const lines: string[] = [];
+	if (codex.error && codex.activeLimit === "error") {
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(`${fmt("error", "✗ Codex")} ${fmt("dim", "— " + codex.error)}`);
+		return lines;
+	}
+
+	const planLabel = codex.planType !== "unknown" ? ` (${codex.planType})` : "";
+	const limitLabel = codex.activeLimit !== "unknown" && codex.activeLimit !== "normal"
+		? ` [${codex.activeLimit}]`
+		: "";
+
+	const p5 = codex.primaryUsedPercent;
+	const p5Window = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
+	const p5Reset = codex.primaryResetAt > 0
+		? ` resets ${formatResetTime(codex.primaryResetAt)}`
+		: codex.primaryResetAfterSeconds > 0
+			? ` resets in ${formatDuration(codex.primaryResetAfterSeconds)}`
+			: "";
+	const pW = codex.secondaryUsedPercent;
+	const pWReset = codex.secondaryResetAt > 0
+		? ` resets ${formatResetTime(codex.secondaryResetAt)}`
+		: codex.secondaryResetAfterSeconds > 0
+			? ` resets in ${formatDuration(codex.secondaryResetAfterSeconds)}`
+			: "";
+
+	lines.push(fmt("dim", "─".repeat(40)));
+	lines.push(`${fmt("accent", "Codex")}${fmt("dim", planLabel + limitLabel)}`);
+
+	if (useColor) {
+		const p5Color = usageColor(p5);
+		const pWColor = usageColor(pW);
+		const p5Bar = progressBar(p5);
+		const pWBar = progressBar(pW);
+		lines.push(`  ${p5Window}  ${fmt(p5Color, p5Bar)} ${fmt(p5Color, `${p5.toFixed(0)}%`)}${fmt("dim", p5Reset)}`);
+		lines.push(`  week  ${fmt(pWColor, pWBar)} ${fmt(pWColor, `${pW.toFixed(0)}%`)}${fmt("dim", pWReset)}`);
+	} else {
+		lines.push(`  ${p5Window}  ${progressBar(p5)} ${p5.toFixed(0)}%${p5Reset}`);
+		lines.push(`  week  ${progressBar(pW)} ${pW.toFixed(0)}%${pWReset}`);
+	}
+
+	if (codex.codeReviewUsedPercent !== undefined) {
+		const pC = codex.codeReviewUsedPercent;
+		const pCReset = codex.codeReviewResetAt
+			? ` resets ${formatResetTime(codex.codeReviewResetAt)}`
+			: codex.codeReviewResetAfterSeconds
+				? ` resets in ${formatDuration(codex.codeReviewResetAfterSeconds)}`
+				: "";
+		if (useColor) {
+			const pCColor = usageColor(pC);
+			const pCBar = progressBar(pC);
+			lines.push(`  review ${fmt(pCColor, pCBar)} ${fmt(pCColor, `${pC.toFixed(0)}%`)}${fmt("dim", pCReset)}`);
+		} else {
+			lines.push(`  review ${progressBar(pC)} ${pC.toFixed(0)}%${pCReset}`);
+		}
+	}
+
+	if (codex.creditsHasCredits && codex.creditsBalance) {
+		lines.push(`  ${fmt("dim", `credits: ${codex.creditsBalance}`)}`);
+	}
+	if (codex.primaryOverSecondaryLimitPercent > 0) {
+		lines.push(`  ${fmt("warning", `⚠ 5hr exceeds weekly allocation: ${codex.primaryOverSecondaryLimitPercent}%`)}`);
+	}
+
+	return lines;
+}
+
+function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: string, text: string) => string, useColor: boolean): string[] {
+	const lines: string[] = [];
+
+	const icon = statusIcon(go.status);
+	const goColorMap: Record<GoModelStatus, string> = {
+		available: "success",
+		rate_limited: "warning",
+		credits_error: "error",
+		error: "warning",
+		no_key: "dim",
+	};
+	const statusText: Record<GoModelStatus, string> = {
+		available: "available",
+		rate_limited: "rate limited",
+		credits_error: "credits exhausted",
+		error: "error",
+		no_key: "no key",
+	};
+	const goColor = goColorMap[go.status];
+	lines.push(fmt("dim", "─".repeat(40)));
+	lines.push(`${fmt(goColor, `${icon} OpenCode Go`)} ${fmt("dim", "— " + statusText[go.status])}`);
+
+	const goWindows = [
+		{
+			label: "rolling", used: go.rollingUsedPercent, remaining: go.rollingRemainingPercent,
+			resetAt: go.rollingResetAt, resetAfterSeconds: go.rollingResetAfterSeconds,
+		},
+		{
+			label: "week", used: go.weeklyUsedPercent, remaining: go.weeklyRemainingPercent,
+			resetAt: go.weeklyResetAt, resetAfterSeconds: go.weeklyResetAfterSeconds,
+		},
+		{
+			label: "month", used: go.monthlyUsedPercent, remaining: go.monthlyRemainingPercent,
+			resetAt: go.monthlyResetAt, resetAfterSeconds: go.monthlyResetAfterSeconds,
+		},
+	];
+	for (const w of goWindows) {
+		if (w.used === undefined) continue;
+		const reset = w.resetAt
+			? ` resets ${formatResetTime(w.resetAt)}`
+			: w.resetAfterSeconds !== undefined
+				? ` resets in ${formatDuration(w.resetAfterSeconds)}`
+				: "";
+		const remaining = w.remaining !== undefined
+			? ` / ${w.remaining.toFixed(0)}% left`
+			: "";
+		if (useColor) {
+			const windowColor = usageColor(w.used);
+			const windowBar = progressBar(w.used);
+			lines.push(`  ${w.label.padEnd(7)} ${fmt(windowColor, windowBar)} ${fmt(windowColor, `${w.used.toFixed(0)}% used`)}${fmt("dim", remaining + reset)}`);
+		} else {
+			lines.push(`  ${w.label.padEnd(7)} ${progressBar(w.used)} ${w.used.toFixed(0)}% used${remaining}${reset}`);
+		}
+	}
+
+	if (go.quotaError) lines.push(`  ${fmt("dim", `quota: ${truncate(go.quotaError, 80)}`)}`);
+	if (go.workingModel) lines.push(`  ${fmt("dim", `working: ${go.workingModel}`)}`);
+	if (go.checkedModels && go.totalModels) lines.push(`  ${fmt("dim", `checked: ${go.checkedModels}/${go.totalModels} Go models`)}`);
+	if (go.rateLimitedModel) lines.push(`  ${fmt("warning", `limited: ${go.rateLimitedModel}`)}`);
+	if (go.errorMessage) lines.push(`  ${fmt("dim", truncate(go.errorMessage, 80))}`);
+	if (go.error) lines.push(`  ${fmt("dim", truncate(go.error, 80))}`);
+
+	return lines;
+}
+
 function buildUsageWidget(
 	codex: CodexUsage | undefined,
 	go: OpenCodeGoUsage | undefined,
@@ -1149,158 +1282,22 @@ function buildUsageWidget(
 	}
 
 	const lines: string[] = [];
-	const sep = "─";
+	const fmt = (color: string, text: string) => theme.fg(color, text);
 
-	// Header
-	lines.push(theme.bold(theme.fg("accent", "⚡ Usage Limits")));
+	lines.push(theme.bold(fmt("accent", "⚡ Usage Limits")));
 
-	// ── Codex ──
 	if (codex) {
-		if (codex.error && codex.activeLimit === "error") {
-			lines.push(theme.fg("dim", sep.repeat(40)));
-			lines.push(`${theme.fg("error", "✗ Codex")} ${theme.fg("dim", "— " + codex.error)}`);
-		} else {
-			const planLabel = codex.planType !== "unknown" ? ` (${codex.planType})` : "";
-			const limitLabel = codex.activeLimit !== "unknown" && codex.activeLimit !== "normal"
-				? ` [${codex.activeLimit}]`
-				: "";
-
-			// 5hr window
-			const p5 = codex.primaryUsedPercent;
-			const p5Color = usageColor(p5);
-			const p5Bar = progressBar(p5);
-			const p5Window = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
-			const p5Reset = codex.primaryResetAt > 0
-				? ` resets ${formatResetTime(codex.primaryResetAt)}`
-				: codex.primaryResetAfterSeconds > 0
-					? ` resets in ${formatDuration(codex.primaryResetAfterSeconds)}`
-					: "";
-
-			// Weekly window
-			const pW = codex.secondaryUsedPercent;
-			const pWColor = usageColor(pW);
-			const pWBar = progressBar(pW);
-			const pWReset = codex.secondaryResetAt > 0
-				? ` resets ${formatResetTime(codex.secondaryResetAt)}`
-				: codex.secondaryResetAfterSeconds > 0
-					? ` resets in ${formatDuration(codex.secondaryResetAfterSeconds)}`
-					: "";
-
-			lines.push(theme.fg("dim", sep.repeat(40)));
-			lines.push(`${theme.fg("accent", "Codex")}${theme.fg("dim", planLabel + limitLabel)}`);
-			lines.push(
-				`  ${p5Window}  ${theme.fg(p5Color, p5Bar)} ${theme.fg(p5Color, `${p5.toFixed(0)}%`)}${theme.fg("dim", p5Reset)}`,
-			);
-			lines.push(
-				`  week  ${theme.fg(pWColor, pWBar)} ${theme.fg(pWColor, `${pW.toFixed(0)}%`)}${theme.fg("dim", pWReset)}`,
-			);
-			if (codex.codeReviewUsedPercent !== undefined) {
-				const pC = codex.codeReviewUsedPercent;
-				const pCColor = usageColor(pC);
-				const pCBar = progressBar(pC);
-				const pCReset = codex.codeReviewResetAt
-					? ` resets ${formatResetTime(codex.codeReviewResetAt)}`
-					: codex.codeReviewResetAfterSeconds
-						? ` resets in ${formatDuration(codex.codeReviewResetAfterSeconds)}`
-						: "";
-				lines.push(
-					`  review ${theme.fg(pCColor, pCBar)} ${theme.fg(pCColor, `${pC.toFixed(0)}%`)}${theme.fg("dim", pCReset)}`,
-				);
-			}
-
-			// Credits info
-			if (codex.creditsHasCredits && codex.creditsBalance) {
-				lines.push(`  ${theme.fg("dim", `credits: ${codex.creditsBalance}`)}`);
-			}
-			if (codex.primaryOverSecondaryLimitPercent > 0) {
-				lines.push(`  ${theme.fg("warning", `⚠ 5hr exceeds weekly allocation: ${codex.primaryOverSecondaryLimitPercent}%`)}`);
-			}
-		}
+		lines.push(...renderCodexWindows(codex, fmt, true));
 	} else {
-		lines.push(theme.fg("dim", sep.repeat(40)));
-		lines.push(theme.fg("dim", "Codex — not configured"));
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(fmt("dim", "Codex — not configured"));
 	}
 
-	// ── OpenCode Go ──
 	if (go) {
-		lines.push(theme.fg("dim", sep.repeat(40)));
-		const icon = statusIcon(go.status);
-		const goColorMap: Record<GoModelStatus, string> = {
-			available: "success",
-			rate_limited: "warning",
-			credits_error: "error",
-			error: "warning",
-			no_key: "dim",
-		};
-		const goColor = goColorMap[go.status];
-		const statusText: Record<GoModelStatus, string> = {
-			available: "available",
-			rate_limited: "rate limited",
-			credits_error: "credits exhausted",
-			error: "error",
-			no_key: "no key",
-		};
-		lines.push(`${theme.fg(goColor, `${icon} OpenCode Go`)} ${theme.fg("dim", "— " + statusText[go.status])}`);
-		const goWindows = [
-			{
-				label: "rolling",
-				used: go.rollingUsedPercent,
-				remaining: go.rollingRemainingPercent,
-				resetAt: go.rollingResetAt,
-				resetAfterSeconds: go.rollingResetAfterSeconds,
-			},
-			{
-				label: "week",
-				used: go.weeklyUsedPercent,
-				remaining: go.weeklyRemainingPercent,
-				resetAt: go.weeklyResetAt,
-				resetAfterSeconds: go.weeklyResetAfterSeconds,
-			},
-			{
-				label: "month",
-				used: go.monthlyUsedPercent,
-				remaining: go.monthlyRemainingPercent,
-				resetAt: go.monthlyResetAt,
-				resetAfterSeconds: go.monthlyResetAfterSeconds,
-			},
-		];
-		for (const window of goWindows) {
-			if (window.used === undefined) continue;
-			const windowColor = usageColor(window.used);
-			const windowBar = progressBar(window.used);
-			const reset = window.resetAt
-				? ` resets ${formatResetTime(window.resetAt)}`
-				: window.resetAfterSeconds !== undefined
-					? ` resets in ${formatDuration(window.resetAfterSeconds)}`
-					: "";
-			const remaining = window.remaining !== undefined
-				? ` / ${window.remaining.toFixed(0)}% left`
-				: "";
-			lines.push(
-				`  ${window.label.padEnd(7)} ${theme.fg(windowColor, windowBar)} ${theme.fg(windowColor, `${window.used.toFixed(0)}% used`)}${theme.fg("dim", remaining + reset)}`,
-			);
-		}
-		if (go.quotaError) {
-			lines.push(`  ${theme.fg("dim", `quota: ${truncate(go.quotaError, 80)}`)}`);
-		}
-		if (go.workingModel) {
-			lines.push(`  ${theme.fg("dim", `working: ${go.workingModel}`)}`);
-		}
-		if (go.checkedModels && go.totalModels) {
-			lines.push(`  ${theme.fg("dim", `checked: ${go.checkedModels}/${go.totalModels} Go models`)}`);
-		}
-		if (go.rateLimitedModel) {
-			lines.push(`  ${theme.fg("warning", `limited: ${go.rateLimitedModel}`)}`);
-		}
-		if (go.errorMessage) {
-			lines.push(`  ${theme.fg("dim", truncate(go.errorMessage, 80))}`);
-		}
-		if (go.error) {
-			lines.push(`  ${theme.fg("dim", truncate(go.error, 80))}`);
-		}
+		lines.push(...renderGoWindows(go, fmt, true));
 	} else {
-		lines.push(theme.fg("dim", sep.repeat(40)));
-		lines.push(theme.fg("dim", "OpenCode Go — not configured"));
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(fmt("dim", "OpenCode Go — not configured"));
 	}
 
 	return new Text(lines.join("\n"), 0, 0);
@@ -1312,84 +1309,26 @@ function buildStartupUsageMessage(
 	includeHelp: boolean,
 ): string {
 	const lines: string[] = [];
-	const sep = "─";
+	const fmt = (_color: string, text: string) => text;
+
 	lines.push("⚡ Usage Limits");
 
 	if (codex) {
-		lines.push(sep.repeat(40));
-		if (codex.error) {
-			lines.push(`✗ Codex — ${codex.error}`);
-		} else {
-			const planLabel = codex.planType !== "unknown" ? ` (${codex.planType})` : "";
-			const limitLabel = codex.activeLimit !== "unknown" && codex.activeLimit !== "normal"
-				? ` [${codex.activeLimit}]`
-				: "";
-			const p5Window = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
-			const p5Reset = codex.primaryResetAt > 0
-				? ` resets ${formatResetTime(codex.primaryResetAt)}`
-				: codex.primaryResetAfterSeconds > 0
-					? ` resets in ${formatDuration(codex.primaryResetAfterSeconds)}`
-					: "";
-			const pWReset = codex.secondaryResetAt > 0
-				? ` resets ${formatResetTime(codex.secondaryResetAt)}`
-				: codex.secondaryResetAfterSeconds > 0
-					? ` resets in ${formatDuration(codex.secondaryResetAfterSeconds)}`
-					: "";
-			lines.push(`Codex${planLabel}${limitLabel}`);
-			lines.push(`  ${p5Window}  ${progressBar(codex.primaryUsedPercent)} ${codex.primaryUsedPercent.toFixed(0)}%${p5Reset}`);
-			lines.push(`  week  ${progressBar(codex.secondaryUsedPercent)} ${codex.secondaryUsedPercent.toFixed(0)}%${pWReset}`);
-			if (codex.codeReviewUsedPercent !== undefined) {
-				const pCReset = codex.codeReviewResetAt
-					? ` resets ${formatResetTime(codex.codeReviewResetAt)}`
-					: codex.codeReviewResetAfterSeconds
-						? ` resets in ${formatDuration(codex.codeReviewResetAfterSeconds)}`
-						: "";
-				lines.push(`  review ${progressBar(codex.codeReviewUsedPercent)} ${codex.codeReviewUsedPercent.toFixed(0)}%${pCReset}`);
-			}
-		}
+		lines.push(...renderCodexWindows(codex, fmt, false));
 	} else {
-		lines.push(sep.repeat(40));
+		lines.push("─".repeat(40));
 		lines.push("Codex — not configured");
 	}
 
 	if (go) {
-		lines.push(sep.repeat(40));
-		const statusText: Record<GoModelStatus, string> = {
-			available: "available",
-			rate_limited: "rate limited",
-			credits_error: "credits exhausted",
-			error: "error",
-			no_key: "no key",
-		};
-		lines.push(`${statusIcon(go.status)} OpenCode Go — ${statusText[go.status]}`);
-		const goWindows = [
-			{ label: "rolling", used: go.rollingUsedPercent, remaining: go.rollingRemainingPercent, resetAt: go.rollingResetAt, resetAfterSeconds: go.rollingResetAfterSeconds },
-			{ label: "week", used: go.weeklyUsedPercent, remaining: go.weeklyRemainingPercent, resetAt: go.weeklyResetAt, resetAfterSeconds: go.weeklyResetAfterSeconds },
-			{ label: "month", used: go.monthlyUsedPercent, remaining: go.monthlyRemainingPercent, resetAt: go.monthlyResetAt, resetAfterSeconds: go.monthlyResetAfterSeconds },
-		];
-		for (const goWindow of goWindows) {
-			if (goWindow.used === undefined) continue;
-			const reset = goWindow.resetAt
-				? ` resets ${formatResetTime(goWindow.resetAt)}`
-				: goWindow.resetAfterSeconds !== undefined
-					? ` resets in ${formatDuration(goWindow.resetAfterSeconds)}`
-					: "";
-			const remaining = goWindow.remaining !== undefined ? ` / ${goWindow.remaining.toFixed(0)}% left` : "";
-			lines.push(`  ${goWindow.label.padEnd(7)} ${progressBar(goWindow.used)} ${goWindow.used.toFixed(0)}% used${remaining}${reset}`);
-		}
-		if (go.quotaError) lines.push(`  quota: ${truncate(go.quotaError, 80)}`);
-		if (go.workingModel) lines.push(`  working: ${go.workingModel}`);
-		if (go.checkedModels && go.totalModels) lines.push(`  checked: ${go.checkedModels}/${go.totalModels} Go models`);
-		if (go.rateLimitedModel) lines.push(`  limited: ${go.rateLimitedModel}`);
-		if (go.errorMessage) lines.push(`  ${truncate(go.errorMessage, 80)}`);
-		if (go.error) lines.push(`  ${truncate(go.error, 80)}`);
+		lines.push(...renderGoWindows(go, fmt, false));
 	} else {
-		lines.push(sep.repeat(40));
+		lines.push("─".repeat(40));
 		lines.push("OpenCode Go — not configured");
 	}
 
 	if (includeHelp) {
-		lines.push(sep.repeat(40));
+		lines.push("─".repeat(40));
 		lines.push(USAGE_WIDGET_HELP);
 	}
 
