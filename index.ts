@@ -1440,7 +1440,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
-		if (isLoading) return;
+		if (isLoading) {
+			if (ctx.hasUI) ctx.ui.notify("Usage check already in progress", "info");
+			return;
+		}
 		isLoading = true;
 		currentCtx = ctx;
 
