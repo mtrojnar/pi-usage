@@ -141,8 +141,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		currentCtx = ctx;
 		if (event.reason === "startup" || event.reason === "reload") {
+			// Block /usage during startup delay to avoid duplicate checks
+			isLoading = true;
 			// Small delay to let TUI settle, then refresh; start autorefresh timer only after first check
 			setTimeout(() => {
+				isLoading = false;
 				refreshUsage(ctx, "startup").catch(() => {}).then(() => {
 					startAutoRefreshTimer(ctx);
 				});
