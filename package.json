@@ -52,7 +52,8 @@
     ]
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "npx tsx --test index.test.ts"
   },
   "devDependencies": {
     "@mariozechner/pi-ai": ">=0.73.1 <1",

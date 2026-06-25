@@ -433,7 +433,7 @@ function formatResetTime(unixTsSec: number): string {
 }
 
 function progressBar(percent: number, width: number = 20): string {
-	const filled = Math.round((Math.min(percent, 100) / 100) * width);
+	const filled = Math.round((clampPercent(percent) / 100) * width);
 	const empty = width - filled;
 	return "█".repeat(filled) + "░".repeat(empty);
 }
@@ -1553,3 +1553,29 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 }
+
+// ───────── Exported for testing ─────────
+
+export {
+	clampPercent,
+	dedupe,
+	footerResetDuration,
+	footerUsageColor,
+	formatDuration,
+	formatResetTime,
+	isGlobalGoLimit,
+	isPerModelUnavailable,
+	parseBoolValue,
+	parseEnvInt,
+	parseHeaderBool,
+	parseHeaderNumber,
+	progressBar,
+	resolveConfigValue,
+	resolveModelEndpoint,
+	truncate,
+	usageColor,
+	windowMinutes,
+	windowResetAfterSeconds,
+	windowResetAt,
+	windowUsedPercent,
+};
