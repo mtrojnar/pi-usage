@@ -425,7 +425,7 @@ function usageColor(percent: number): string {
 }
 
 function parseHeaderNumber(value: string | undefined, fallback: number): number {
-	if (value === undefined) return fallback;
+	if (value === undefined || value === "") return fallback;
 	const parsed = Number(value);
 	return Number.isFinite(parsed) ? parsed : fallback;
 }
