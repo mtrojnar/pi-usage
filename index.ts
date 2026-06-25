@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getModels } from "@mariozechner/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionUIContext,
@@ -900,23 +899,28 @@ function resolveModelEndpoint(baseUrl: string, api: GoProbeApi): string {
 	return `${normalized}/v1/chat/completions`;
 }
 
-function getOpenCodeGoCheckModels(): GoCheckModel[] {
+async function getOpenCodeGoCheckModels(): Promise<GoCheckModel[]> {
 	const modelsById = new Map<string, GoCheckModel>();
 	for (const model of DOCUMENTED_GO_MODELS) {
 		modelsById.set(model.id, model);
 	}
-	for (const model of getModels("opencode-go")) {
-		if (modelsById.has(model.id)) continue;
-		const api: GoProbeApi = (model.api as string) === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
-		const cost = model.cost ?? {};
-		const rawRank = (cost.input ?? 0) + (cost.output ?? 0) + (cost.cacheRead ?? 0) + (cost.cacheWrite ?? 0);
-		const costRank = Number.isFinite(rawRank) ? rawRank : 9999;
-		modelsById.set(model.id, {
-			id: model.id,
-			api,
-			endpoint: resolveModelEndpoint(model.baseUrl, api),
-			costRank,
-		});
+	try {
+		const { getModels } = await import("@mariozechner/pi-ai");
+			for (const model of getModels("opencode-go")) {
+			if (modelsById.has(model.id)) continue;
+			const api: GoProbeApi = (model.api as string) === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
+			const cost = model.cost ?? {};
+			const rawRank = (cost.input ?? 0) + (cost.output ?? 0) + (cost.cacheRead ?? 0) + (cost.cacheWrite ?? 0);
+			const costRank = Number.isFinite(rawRank) ? rawRank : 9999;
+			modelsById.set(model.id, {
+				id: model.id,
+				api,
+				endpoint: resolveModelEndpoint(model.baseUrl, api),
+				costRank,
+			});
+		}
+	} catch {
+		// pi-ai not available — use only documented models
 	}
 	return Array.from(modelsById.values()).sort((a, b) => a.costRank - b.costRank || a.id.localeCompare(b.id));
 }
@@ -984,7 +988,7 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 		};
 	}
 
-	const models = getOpenCodeGoCheckModels();
+	const models = await getOpenCodeGoCheckModels();
 	let checkedModels = 0;
 	let lastRateLimit: { model: string; message: string } | undefined;
 	let lastUnavailable: { model: string; message: string } | undefined;
