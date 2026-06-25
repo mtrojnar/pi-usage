@@ -266,7 +266,7 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 		const limited = codex.activeLimit === "rate_limited" ? " limited" : "";
 		parts.push(`${dim(`Codex${limited}:`)}${codexFooterSummary(codex, theme)}`);
 	}
-	if (go) {
+	if (goUsageHasData(go)) {
 		parts.push(`${dim("Go:")}${goFooterSummary(go, theme)}`);
 	}
 	if (parts.length > 0) {
@@ -278,4 +278,8 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 
 export function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage & { error: undefined } {
 	return codex !== undefined && codex.error === undefined && codex.activeLimit !== "error";
+}
+
+export function goUsageHasData(go: OpenCodeGoUsage | undefined): go is OpenCodeGoUsage {
+	return go !== undefined && go.status !== "no_key";
 }
