@@ -1260,7 +1260,7 @@ function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, text: str
 		if (w.used === undefined) continue;
 		const reset = w.resetAt
 			? ` resets ${formatResetTime(w.resetAt)}`
-			: w.resetAfterSeconds !== undefined
+			: w.resetAfterSeconds !== undefined && w.resetAfterSeconds > 0
 				? ` resets in ${formatDuration(w.resetAfterSeconds)}`
 				: "";
 		const remaining = w.remaining !== undefined
