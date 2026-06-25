@@ -1533,6 +1533,7 @@ export default function (pi: ExtensionAPI) {
 			clearInterval(refreshTimer);
 			refreshTimer = undefined;
 		}
+		currentCtx = undefined;
 	});
 
 	// ── /usage command ──
