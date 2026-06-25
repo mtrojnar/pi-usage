@@ -398,6 +398,10 @@ function getAuthApiKey(auth: AuthJson | undefined, provider: string): string | u
 	return resolveConfigValue(credential.key);
 }
 
+function truncate(text: string, maxLen: number): string {
+	return text.length <= maxLen ? text : text.slice(0, maxLen) + "…";
+}
+
 function formatDuration(seconds: number): string {
 	if (seconds <= 0) return "now";
 	if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -1276,7 +1280,7 @@ function buildUsageWidget(
 			);
 		}
 		if (go.quotaError) {
-			lines.push(`  ${theme.fg("dim", `quota: ${go.quotaError.substring(0, 80)}`)}`);
+			lines.push(`  ${theme.fg("dim", `quota: ${truncate(go.quotaError, 80)}`)}`);
 		}
 		if (go.workingModel) {
 			lines.push(`  ${theme.fg("dim", `working: ${go.workingModel}`)}`);
@@ -1288,10 +1292,10 @@ function buildUsageWidget(
 			lines.push(`  ${theme.fg("warning", `limited: ${go.rateLimitedModel}`)}`);
 		}
 		if (go.errorMessage) {
-			lines.push(`  ${theme.fg("dim", go.errorMessage.substring(0, 80))}`);
+			lines.push(`  ${theme.fg("dim", truncate(go.errorMessage, 80))}`);
 		}
 		if (go.error) {
-			lines.push(`  ${theme.fg("dim", go.error.substring(0, 80))}`);
+			lines.push(`  ${theme.fg("dim", truncate(go.error, 80))}`);
 		}
 	} else {
 		lines.push(theme.fg("dim", sep.repeat(40)));
@@ -1372,12 +1376,12 @@ function buildStartupUsageMessage(
 			const remaining = goWindow.remaining !== undefined ? ` / ${goWindow.remaining.toFixed(0)}% left` : "";
 			lines.push(`  ${goWindow.label.padEnd(7)} ${progressBar(goWindow.used)} ${goWindow.used.toFixed(0)}% used${remaining}${reset}`);
 		}
-		if (go.quotaError) lines.push(`  quota: ${go.quotaError.substring(0, 80)}`);
+		if (go.quotaError) lines.push(`  quota: ${truncate(go.quotaError, 80)}`);
 		if (go.workingModel) lines.push(`  working: ${go.workingModel}`);
 		if (go.checkedModels && go.totalModels) lines.push(`  checked: ${go.checkedModels}/${go.totalModels} Go models`);
 		if (go.rateLimitedModel) lines.push(`  limited: ${go.rateLimitedModel}`);
-		if (go.errorMessage) lines.push(`  ${go.errorMessage.substring(0, 80)}`);
-		if (go.error) lines.push(`  ${go.error.substring(0, 80)}`);
+		if (go.errorMessage) lines.push(`  ${truncate(go.errorMessage, 80)}`);
+		if (go.error) lines.push(`  ${truncate(go.error, 80)}`);
 	} else {
 		lines.push(sep.repeat(40));
 		lines.push("OpenCode Go — not configured");
