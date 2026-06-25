@@ -152,9 +152,9 @@ export function validatePrivateConfigFile(configPath: string): string | undefine
 	if (process.platform === "win32") return undefined;
 
 	const stats = fs.statSync(configPath);
-	if (!stats.isFile()) return `${configPath} must be a regular file`;
+	if (!stats.isFile()) return `${path.basename(configPath)} must be a regular file`;
 	if ((stats.mode & 0o077) !== 0) {
-		return `${configPath} contains an auth cookie and must not be accessible by group or others; set mode 0600`;
+		return `${path.basename(configPath)} contains an auth cookie and must not be accessible by group or others; set mode 0600`;
 	}
 	return undefined;
 }
