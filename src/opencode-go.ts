@@ -53,6 +53,12 @@ export const GO_STATUS_TEXT: Record<GoModelStatus, string> = {
 
 // ───────── Auth Helpers ─────────
 
+function getAuthApiKey(auth: AuthJson | undefined, provider: string): string | undefined {
+	const credential = auth?.[provider] as AuthApiKeyCredential | undefined;
+	if (credential?.type !== "api_key" || !credential.key) return undefined;
+	return resolveConfigValue(credential.key);
+}
+
 export function getOpenCodeApiKey(): string | undefined {
 	const auth = readAuthJson();
 	const goKey = getAuthApiKey(auth, "opencode-go");
@@ -60,12 +66,6 @@ export function getOpenCodeApiKey(): string | undefined {
 	const zenKey = getAuthApiKey(auth, "opencode");
 	if (zenKey) return zenKey;
 	return process.env.OPENCODE_API_KEY;
-}
-
-function getAuthApiKey(auth: AuthJson | undefined, provider: string): string | undefined {
-	const credential = auth?.[provider] as AuthApiKeyCredential | undefined;
-	if (credential?.type !== "api_key" || !credential.key) return undefined;
-	return resolveConfigValue(credential.key);
 }
 
 // ───────── Dashboard Quota Parsing ─────────
