@@ -1524,17 +1524,26 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ── Startup check + auto-refresh ──
-	pi.on("session_start", async (event, ctx) => {
-		currentCtx = ctx;
-		if (event.reason === "startup" || event.reason === "reload") {
-			// Small delay to let TUI settle
-			setTimeout(() => refreshUsage(ctx, "startup").catch(() => {}), 500);
-		}
+	function startAutoRefreshTimer(ctx: UsageContext): void {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
 			if (currentCtx) refreshUsage(currentCtx, "auto").catch(() => {});
 		}, AUTO_REFRESH_MINUTES * 60 * 1000);
+	}
+
+	// ── Startup check + auto-refresh ──
+	pi.on("session_start", async (event, ctx) => {
+		currentCtx = ctx;
+		if (event.reason === "startup" || event.reason === "reload") {
+			// Small delay to let TUI settle, then refresh; start autorefresh timer only after first check
+			setTimeout(() => {
+				refreshUsage(ctx, "startup").catch(() => {}).then(() => {
+					startAutoRefreshTimer(ctx);
+				});
+			}, 500);
+		} else {
+			startAutoRefreshTimer(ctx);
+		}
 	});
 
 	pi.on("session_shutdown", async () => {
