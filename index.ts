@@ -17,7 +17,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { getModels } from "@mariozechner/pi-ai";
-import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
@@ -63,7 +62,6 @@ interface CodexOAuthCredential {
 }
 
 type AuthJson = Record<string, AuthApiKeyCredential | CodexOAuthCredential | undefined>;
-type OpenAIOAuthSourceKey = (typeof OPENAI_OAUTH_SOURCE_KEYS)[number];
 
 interface GoCheckModel {
 	id: string;
@@ -132,12 +130,11 @@ interface OpenCodeGoQuotaResult {
 const WIDGET_ID = "pi-usage";
 const CHECK_TIMEOUT_MS = 15_000;
 const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
-const CODEX_REFRESH_SKEW_MS = 60_000;
 const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "opencode-go.json");
 const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
-const OPENAI_OAUTH_SOURCE_KEYS = ["openai-codex", "openai", "codex", "chatgpt", "opencode"] as const;
+const OPENAI_CODEX_PROVIDER = "openai-codex";
 
 // OpenCode Go publishes a fixed dollar limit, but no public usage/balance API.
 // These are used only as the probe fallback when the installed pi model registry
@@ -171,11 +168,15 @@ function authJsonPath(): string {
 	return path.join(agentDir(), "auth.json");
 }
 
+function parseAuthJson(content: string | undefined): AuthJson {
+	return content ? JSON.parse(content) as AuthJson : {};
+}
+
 function readAuthJson(): AuthJson | undefined {
 	try {
 		const authPath = authJsonPath();
 		if (!fs.existsSync(authPath)) return undefined;
-		return JSON.parse(fs.readFileSync(authPath, "utf8")) as AuthJson;
+		return parseAuthJson(fs.readFileSync(authPath, "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -255,14 +256,6 @@ function getOpenCodeGoQuotaConfig(): OpenCodeGoQuotaConfigState {
 	return {};
 }
 
-function writeAuthJson(auth: AuthJson): void {
-	const authPath = authJsonPath();
-	fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf8");
-	try {
-		fs.chmodSync(authPath, 0o600);
-	} catch { /* best effort on platforms without POSIX permissions */ }
-}
-
 function extractAccountId(token: string): string | undefined {
 	try {
 		const parts = token.split(".");
@@ -293,37 +286,21 @@ function resolveConfigValue(config: string): string | undefined {
 	return resolved !== undefined ? resolved : config;
 }
 
-async function getCodexToken(): Promise<{ token: string; accountId: string; sourceKey: OpenAIOAuthSourceKey } | undefined> {
+async function getCodexToken(): Promise<{ token: string; accountId: string } | undefined> {
 	try {
-		const auth = readAuthJson();
-		if (!auth) return undefined;
+		const authPath = authJsonPath();
+		if (!fs.existsSync(authPath)) return undefined;
 
-		let sourceKey: OpenAIOAuthSourceKey | undefined;
-		let codex: CodexOAuthCredential | undefined;
-		for (const key of OPENAI_OAUTH_SOURCE_KEYS) {
-			const candidate = auth[key] as CodexOAuthCredential | undefined;
-			if (candidate?.type === "oauth" && candidate.access) {
-				sourceKey = key;
-				codex = candidate;
-				break;
-			}
-		}
-		if (!sourceKey || !codex?.access) return undefined;
+		// Let pi own OAuth refresh, locking, and auth.json permissions.
+		const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+		const authStorage = AuthStorage.create(authPath);
+		const token = await authStorage.getApiKey(OPENAI_CODEX_PROVIDER, { includeFallback: false });
+		if (!token) return undefined;
 
-		if (codex.refresh && (!codex.expires || Date.now() + CODEX_REFRESH_SKEW_MS >= codex.expires)) {
-			const refreshed = await refreshOpenAICodexToken(codex.refresh);
-			const accountId = typeof refreshed.accountId === "string"
-				? refreshed.accountId
-				: extractAccountId(refreshed.access);
-			if (!accountId) return undefined;
-			auth[sourceKey] = { type: "oauth", ...refreshed, accountId };
-			writeAuthJson(auth);
-			return { token: refreshed.access, accountId, sourceKey };
-		}
-
-		const accountId = codex.accountId ?? extractAccountId(codex.access);
+		const codex = authStorage.get(OPENAI_CODEX_PROVIDER) as CodexOAuthCredential | undefined;
+		const accountId = codex?.accountId ?? extractAccountId(token);
 		if (!accountId) return undefined;
-		return { token: codex.access, accountId, sourceKey };
+		return { token, accountId };
 	} catch {
 		return undefined;
 	}
