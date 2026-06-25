@@ -2,6 +2,29 @@
 
 Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex** and **OpenCode Go** usage limits at startup so you know your limits before you start coding.
 
+## Repository and Credits
+
+This repository is the maintained fork at [mtrojnar/pi-usage](https://github.com/mtrojnar/pi-usage). It was forked from [timm-u/pi-usage](https://github.com/timm-u/pi-usage), created by [timm-u](https://github.com/timm-u).
+
+[Michał Trojnara](https://github.com/mtrojnar) maintains this fork. Copyright remains with `timm-u` for original work and with Michał Trojnara for fork changes.
+
+## Major Changes from timm-u/pi-usage
+
+Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork at [mtrojnar/pi-usage](https://github.com/mtrojnar/pi-usage):
+
+### Security Changes
+
+- Private OpenCode Go quota config enforcement on POSIX systems (`0600`) before reading browser auth cookies.
+- Codex OAuth lookup through pi `AuthStorage`, so pi handles token refresh, locking, and auth file permissions.
+- Bounded response-body reads to reduce hang and memory-exhaustion risk.
+
+### Functional Changes
+
+- `PI_CODING_AGENT_DIR` support instead of assuming `~/.pi/agent`.
+- `limited` status in the footer and startup notification when Codex reports `rate_limited`.
+- Safer config/model handling for falsy environment values and missing OpenCode Go model cost data.
+- Cancellation of unused response bodies to avoid stalled probe connections.
+
 ## What It Does
 
 When pi starts up, **pi-usage** automatically:
@@ -27,7 +50,7 @@ Results are displayed as a **widget above the editor** with progress bars and co
 ### Via pi install (recommended)
 
 ```bash
-pi install git:github.com/timm-u/pi-usage
+pi install git:github.com/mtrojnar/pi-usage
 ```
 
 ### Manual
@@ -36,7 +59,7 @@ Clone or copy into your extensions directory:
 
 ```bash
 # Global
-git clone https://github.com/timm-u/pi-usage ~/.pi/agent/extensions/pi-usage
+git clone https://github.com/mtrojnar/pi-usage ~/.pi/agent/extensions/pi-usage
 
 # Then install dependencies
 cd ~/.pi/agent/extensions/pi-usage && npm install
@@ -46,7 +69,7 @@ Or add to your `settings.json`:
 
 ```json
 {
-  "packages": ["git:github.com/timm-u/pi-usage"]
+  "packages": ["git:github.com/mtrojnar/pi-usage"]
 }
 ```
 
@@ -54,7 +77,7 @@ Or add to your `settings.json`:
 
 ### Codex
 
-No additional setup needed — pi-usage reads the same OAuth token that the `openai-codex` provider uses (stored in `~/.pi/agent/auth.json` from `/login`) and refreshes it when expired.
+No additional setup needed — pi-usage reads the same OAuth token that the `openai-codex` provider uses (stored in `$PI_CODING_AGENT_DIR/auth.json`, or `~/.pi/agent/auth.json` by default, from `/login`) and refreshes it when expired.
 
 If you haven't set up Codex yet, run `/login` in pi and select the Codex provider.
 
@@ -62,7 +85,7 @@ If you haven't set up Codex yet, run `/login` in pi and select the Codex provide
 
 Current pi releases include OpenCode Go as a built-in provider (`opencode-go`), so the old `pi-opencode` extension is not required.
 
-Configure OpenCode Go the same way pi does: set the `OPENCODE_API_KEY` environment variable, or store a key in `~/.pi/agent/auth.json` under `opencode-go`:
+Configure OpenCode Go the same way pi does: set the `OPENCODE_API_KEY` environment variable, or store a key in `$PI_CODING_AGENT_DIR/auth.json` (`~/.pi/agent/auth.json` by default) under `opencode-go`:
 
 ```bash
 export OPENCODE_API_KEY="your-key-here"
@@ -74,7 +97,7 @@ export OPENCODE_API_KEY="your-key-here"
 }
 ```
 
-`pi-usage` checks `~/.pi/agent/auth.json` first (`opencode-go`, then `opencode`) and falls back to `OPENCODE_API_KEY`.
+`pi-usage` checks `$PI_CODING_AGENT_DIR/auth.json` first (`opencode-go`, then `opencode`; default `~/.pi/agent/auth.json`) and falls back to `OPENCODE_API_KEY`.
 
 For the rolling, weekly, and monthly usage percentages, pi-usage can also read the OpenCode Go dashboard. This needs your OpenCode workspace id and the `auth` cookie from your browser session:
 
@@ -180,6 +203,7 @@ It builds the probe list from OpenCode's documented Go models, then adds any ext
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PI_USAGE_REFRESH_MIN` | `30` | Auto-refresh interval in minutes |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` lookup |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
 | `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |
@@ -187,4 +211,7 @@ It builds the probe list from OpenCode's documented Go models, then adds any ext
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+Copyright (c) 2026 timm-u  
+Copyright (c) 2026 Michał Trojnara

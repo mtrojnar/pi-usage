@@ -3,6 +3,17 @@
   "version": "0.1.0",
   "description": "Usage limit checker for pi coding agent — shows Codex and OpenCode Go limits at startup",
   "license": "MIT",
+  "author": "timm-u and Michał Trojnara",
+  "authors": [
+    {
+      "name": "timm-u",
+      "url": "https://github.com/timm-u"
+    },
+    {
+      "name": "Michał Trojnara",
+      "url": "https://github.com/mtrojnar"
+    }
+  ],
   "type": "module",
   "main": "index.ts",
   "exports": {
@@ -26,9 +37,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/timm-u/pi-usage.git"
+    "url": "https://github.com/mtrojnar/pi-usage.git"
   },
-  "homepage": "https://github.com/timm-u/pi-usage",
+  "homepage": "https://github.com/mtrojnar/pi-usage",
+  "bugs": {
+    "url": "https://github.com/mtrojnar/pi-usage/issues"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
