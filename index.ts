@@ -213,8 +213,10 @@ function parseBoolValue(value: string | undefined): boolean | undefined {
 }
 
 function agentDir(): string {
-	const dir = process.env.PI_CODING_AGENT_DIR || "~/.pi/agent";
-	return dir.startsWith("~") ? path.join(os.homedir(), dir.slice(1)) : dir;
+	const dir = (process.env.PI_CODING_AGENT_DIR || "~/.pi/agent").trim();
+	if (!dir) return path.join(os.homedir(), ".pi", "agent");
+	if (dir.startsWith("~")) return path.join(os.homedir(), dir.slice(1));
+	return path.resolve(dir);
 }
 
 function authJsonPath(): string {
