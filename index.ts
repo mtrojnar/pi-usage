@@ -136,6 +136,7 @@ const USAGE_CONFIG_FILE = "pi-usage.json";
 const USAGE_WIDGET_HELP = `Widget disabled. Enable: add {"showWidget": true} to ${USAGE_CONFIG_FILE} or run with --${USAGE_WIDGET_FLAG}.`;
 const CHECK_TIMEOUT_MS = 15_000;
 const BODY_READ_TIMEOUT_MS = CHECK_TIMEOUT_MS;
+const MAX_BODY_BYTES = 512_000;
 const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
 const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -452,6 +453,9 @@ async function readResponseText(response: Response): Promise<string> {
 			if (!value) continue;
 			chunks.push(value);
 			totalBytes += value.byteLength;
+			if (totalBytes > MAX_BODY_BYTES) {
+				throw new Error(`Response body exceeded ${MAX_BODY_BYTES} byte limit`);
+			}
 		}
 	} finally {
 		clearTimeout(timeout);
