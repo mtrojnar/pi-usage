@@ -631,6 +631,24 @@ async function checkCodexUsageFromUsageApi(token: string, accountId: string): Pr
 	}
 }
 
+const PROBE_ERROR_BASE: Omit<CodexUsage, "error"> = {
+	planType: "unknown",
+	activeLimit: "error",
+	primaryUsedPercent: 0,
+	secondaryUsedPercent: 0,
+	primaryWindowMinutes: 300,
+	secondaryWindowMinutes: 10080,
+	primaryResetAfterSeconds: 0,
+	secondaryResetAfterSeconds: 0,
+	primaryResetAt: 0,
+	secondaryResetAt: 0,
+	primaryOverSecondaryLimitPercent: 0,
+	creditsHasCredits: false,
+	creditsBalance: "",
+	creditsUnlimited: false,
+	source: "probe",
+};
+
 async function checkCodexUsageWithProbe(token: string, accountId: string): Promise<CodexUsage> {
 	const baseUrl = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -726,41 +744,10 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 			errorMsg = parsed?.error?.message ?? parsed?.detail ?? errorMsg;
 		} catch { /* ignore */ }
 
-		return {
-			planType: "unknown",
-			activeLimit: "error",
-			primaryUsedPercent: 0,
-			secondaryUsedPercent: 0,
-			primaryWindowMinutes: 300,
-			secondaryWindowMinutes: 10080,
-			primaryResetAfterSeconds: 0,
-			secondaryResetAfterSeconds: 0,
-			primaryResetAt: 0,
-			secondaryResetAt: 0,
-			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: false,
-			creditsBalance: "",
-			creditsUnlimited: false,
-			source: "probe",
-			error: errorMsg,
-		};
+		return { ...PROBE_ERROR_BASE, error: errorMsg };
 	} catch (e: unknown) {
 		return {
-			planType: "unknown",
-			activeLimit: "error",
-			primaryUsedPercent: 0,
-			secondaryUsedPercent: 0,
-			primaryWindowMinutes: 300,
-			secondaryWindowMinutes: 10080,
-			primaryResetAfterSeconds: 0,
-			secondaryResetAfterSeconds: 0,
-			primaryResetAt: 0,
-			secondaryResetAt: 0,
-			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: false,
-			creditsBalance: "",
-			creditsUnlimited: false,
-			source: "probe",
+			...PROBE_ERROR_BASE,
 			error: e instanceof Error ? e.message : String(e),
 		};
 	}
