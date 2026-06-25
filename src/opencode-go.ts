@@ -98,11 +98,6 @@ export function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuot
 	const monthly = parseOpenCodeGoUsageWindow(html, "monthly");
 	if (!rolling && !weekly && !monthly) {
 		const snippet = truncate(html, 300).replace(/\s+/g, " ");
-		console.warn(
-			"pi-usage: OpenCode Go dashboard structure not recognized. " +
-			"The expected rollingUsage/weeklyUsage/monthlyUsage patterns were not found. " +
-			`HTML snippet: ${snippet}`,
-		);
 		return {
 			error: `OpenCode Go dashboard structure not recognized. HTML: ${snippet}`,
 		};
