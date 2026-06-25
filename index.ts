@@ -129,6 +129,7 @@ interface OpenCodeGoQuotaResult {
 
 const WIDGET_ID = "pi-usage";
 const CHECK_TIMEOUT_MS = 15_000;
+const BODY_READ_TIMEOUT_MS = CHECK_TIMEOUT_MS;
 const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
 const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -371,6 +372,52 @@ function parseHeaderBool(value: string | undefined): boolean {
 	return value?.toLowerCase() === "true";
 }
 
+async function readResponseText(response: Response): Promise<string> {
+	const reader = response.body?.getReader();
+	if (!reader) return "";
+
+	const chunks: Uint8Array[] = [];
+	let totalBytes = 0;
+	let timedOut = false;
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		reader.cancel().catch(() => {});
+	}, BODY_READ_TIMEOUT_MS);
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			chunks.push(value);
+			totalBytes += value.byteLength;
+		}
+	} finally {
+		clearTimeout(timeout);
+		try { reader.releaseLock(); } catch { /* ignore */ }
+	}
+
+	if (timedOut) throw new Error("Response body read timed out");
+
+	const bytes = new Uint8Array(totalBytes);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(bytes);
+}
+
+async function readResponseJson<T>(response: Response): Promise<T> {
+	return JSON.parse(await readResponseText(response)) as T;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+	try {
+		await response.body?.cancel();
+	} catch { /* ignore */ }
+}
+
 function statusIcon(status: GoModelStatus): string {
 	switch (status) {
 		case "available": return "✓";
@@ -454,13 +501,13 @@ async function checkCodexUsageFromUsageApi(token: string, accountId: string): Pr
 		if (!response.ok) {
 			let detail = `HTTP ${response.status}`;
 			try {
-				const body = await response.text();
+				const body = await readResponseText(response);
 				detail = body.substring(0, 160) || detail;
 			} catch { /* ignore */ }
 			return { success: false, error: `OpenAI usage API: ${detail}` };
 		}
 
-		const data = (await response.json()) as OpenAIUsageResponse;
+		const data = await readResponseJson<OpenAIUsageResponse>(response);
 		const primary = data.rate_limit?.primary_window;
 		if (!primary) {
 			return { success: false, error: "OpenAI usage API: no primary quota window" };
@@ -532,17 +579,7 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 			response.headers.get(name) ?? undefined;
 
 		if (response.ok) {
-			// Consume the body to complete the stream
-			try {
-				const reader = response.body?.getReader();
-				if (reader) {
-					while (true) {
-						const { done } = await reader.read();
-						if (done) break;
-					}
-					reader.releaseLock();
-				}
-			} catch { /* stream already ended or aborted */ }
+			await cancelResponseBody(response);
 
 			return {
 				planType: getHeader("x-codex-plan-type") ?? "unknown",
@@ -567,7 +604,7 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 		if (response.status === 429) {
 			let resetAt = parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0);
 			try {
-				const body = await response.text();
+				const body = await readResponseText(response);
 				const parsed = JSON.parse(body);
 				resetAt = parsed?.error?.resets_at ?? resetAt;
 			} catch { /* ignore */ }
@@ -598,7 +635,7 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 		// Other errors
 		let errorMsg = `HTTP ${response.status}`;
 		try {
-			const body = await response.text();
+			const body = await readResponseText(response);
 			const parsed = JSON.parse(body);
 			errorMsg = parsed?.error?.message ?? parsed?.detail ?? errorMsg;
 		} catch { /* ignore */ }
@@ -732,7 +769,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 			};
 		}
 
-		const html = await response.text();
+		const html = await readResponseText(response);
 		const parsed = parseOpenCodeGoDashboardUsage(html);
 		if (!parsed) {
 			return {
@@ -802,7 +839,7 @@ function getOpenCodeGoCheckModels(): GoCheckModel[] {
 
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
 	try {
-		const body = await response.text();
+		const body = await readResponseText(response);
 		const parsed = JSON.parse(body);
 		return parsed?.error?.message ?? parsed?.message ?? parsed?.detail ?? fallback;
 	} catch {
@@ -882,7 +919,7 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 			}
 
 			if (response.ok) {
-				try { await response.text(); } catch { /* ignore */ }
+				await cancelResponseBody(response);
 				return {
 					available: true,
 					status: "available",
