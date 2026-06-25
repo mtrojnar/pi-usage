@@ -474,6 +474,7 @@ async function readResponseText(response: Response): Promise<string> {
 			chunks.push(value);
 			totalBytes += value.byteLength;
 			if (totalBytes > MAX_BODY_BYTES) {
+				reader.cancel().catch(() => {});
 				throw new Error(`Response body exceeded ${MAX_BODY_BYTES} byte limit`);
 			}
 		}
