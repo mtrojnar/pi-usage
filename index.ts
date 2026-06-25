@@ -1237,12 +1237,42 @@ function buildUsageWidget(
 
 // ───────── Status Line ─────────
 
+function footerResetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
+	if (resetAt !== undefined && resetAt > 0) return formatResetTime(resetAt);
+	if (resetAfterSeconds !== undefined && resetAfterSeconds > 0) return formatDuration(resetAfterSeconds);
+	return undefined;
+}
+
+function footerWindowSummary(
+	usedPercent: number,
+	resetAt?: number,
+	resetAfterSeconds?: number,
+	suffix: string = "",
+): string {
+	const reset = footerResetDuration(resetAt, resetAfterSeconds);
+	const used = `${usedPercent.toFixed(0)}%${suffix}`;
+	return reset ? `${used}/${reset}` : used;
+}
+
+function codexFooterSummary(codex: CodexUsage): string {
+	return [
+		footerWindowSummary(codex.primaryUsedPercent, codex.primaryResetAt, codex.primaryResetAfterSeconds),
+		footerWindowSummary(codex.secondaryUsedPercent, codex.secondaryResetAt, codex.secondaryResetAfterSeconds),
+	].join(",");
+}
+
 function goFooterSummary(go: OpenCodeGoUsage): string {
 	const quotaParts: string[] = [];
-	if (go.rollingUsedPercent !== undefined) quotaParts.push(`${go.rollingUsedPercent.toFixed(0)}%r`);
-	if (go.weeklyUsedPercent !== undefined) quotaParts.push(`${go.weeklyUsedPercent.toFixed(0)}%w`);
-	if (go.monthlyUsedPercent !== undefined) quotaParts.push(`${go.monthlyUsedPercent.toFixed(0)}%m`);
-	return quotaParts.length > 0 ? quotaParts.join("/") : statusIcon(go.status);
+	if (go.rollingUsedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(go.rollingUsedPercent, go.rollingResetAt, go.rollingResetAfterSeconds, "r"));
+	}
+	if (go.weeklyUsedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(go.weeklyUsedPercent, go.weeklyResetAt, go.weeklyResetAfterSeconds, "w"));
+	}
+	if (go.monthlyUsedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(go.monthlyUsedPercent, go.monthlyResetAt, go.monthlyResetAfterSeconds, "m"));
+	}
+	return quotaParts.length > 0 ? quotaParts.join(",") : statusIcon(go.status);
 }
 
 function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
@@ -1251,7 +1281,7 @@ function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCod
 	const parts: string[] = [];
 	if (codexUsageHasData(codex)) {
 		const limited = codex.activeLimit === "rate_limited" ? " limited" : "";
-		parts.push(`Codex${limited}:${codex.primaryUsedPercent.toFixed(0)}%/${codex.secondaryUsedPercent.toFixed(0)}%`);
+		parts.push(`Codex${limited}:${codexFooterSummary(codex)}`);
 	}
 	if (go) {
 		parts.push(`Go:${goFooterSummary(go)}`);
