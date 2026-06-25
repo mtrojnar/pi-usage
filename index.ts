@@ -494,6 +494,7 @@ function statusIcon(status: GoModelStatus): string {
 		case "credits_error": return "✗";
 		case "error": return "⚠";
 		case "no_key": return "—";
+		default: return "?";
 	}
 }
 
