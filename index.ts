@@ -557,7 +557,7 @@ async function checkCodexUsageFromUsageApi(token: string, accountId: string): Pr
 			let detail = `HTTP ${response.status}`;
 			try {
 				const body = await readResponseText(response);
-				detail = body.substring(0, 160) || detail;
+				detail = truncate(body, 160) || detail;
 			} catch { /* ignore */ }
 			return { success: false, error: `OpenAI usage API: ${detail}` };
 		}
