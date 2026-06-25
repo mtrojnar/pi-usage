@@ -906,7 +906,7 @@ async function getOpenCodeGoCheckModels(): Promise<GoCheckModel[]> {
 	}
 	try {
 		const { getModels } = await import("@mariozechner/pi-ai");
-			for (const model of getModels("opencode-go")) {
+		for (const model of getModels("opencode-go")) {
 			if (modelsById.has(model.id)) continue;
 			const api: GoProbeApi = (model.api as string) === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
 			const cost = model.cost ?? {};
@@ -1268,8 +1268,8 @@ function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, text: str
 	if (go.workingModel) lines.push(`  ${fmt("dim", `working: ${go.workingModel}`)}`);
 	if (go.checkedModels && go.totalModels) lines.push(`  ${fmt("dim", `checked: ${go.checkedModels}/${go.totalModels} Go models`)}`);
 	if (go.rateLimitedModel) lines.push(`  ${fmt("warning", `limited: ${go.rateLimitedModel}`)}`);
-	if (go.errorMessage) lines.push(`  ${fmt("dim", truncate(go.errorMessage, 80))}`);
-	if (go.error) lines.push(`  ${fmt("dim", truncate(go.error, 80))}`);
+	const goError = go.errorMessage || go.error;
+	if (goError) lines.push(`  ${fmt("dim", truncate(goError, 80))}`);
 
 	return lines;
 }
