@@ -159,6 +159,22 @@ const DOCUMENTED_GO_MODELS: GoCheckModel[] = [
 	{ id: "glm-5.1", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 10 },
 ];
 
+const GO_COLOR_MAP: Record<GoModelStatus, string> = {
+	available: "success",
+	rate_limited: "warning",
+	credits_error: "error",
+	error: "warning",
+	no_key: "dim",
+};
+
+const GO_STATUS_TEXT: Record<GoModelStatus, string> = {
+	available: "available",
+	rate_limited: "rate limited",
+	credits_error: "credits exhausted",
+	error: "error",
+	no_key: "no key",
+};
+
 // ───────── Helpers ─────────
 
 function parseEnvInt(name: string, fallback: number): number {
@@ -1195,23 +1211,9 @@ function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: string, text: string)
 	const lines: string[] = [];
 
 	const icon = statusIcon(go.status);
-	const goColorMap: Record<GoModelStatus, string> = {
-		available: "success",
-		rate_limited: "warning",
-		credits_error: "error",
-		error: "warning",
-		no_key: "dim",
-	};
-	const statusText: Record<GoModelStatus, string> = {
-		available: "available",
-		rate_limited: "rate limited",
-		credits_error: "credits exhausted",
-		error: "error",
-		no_key: "no key",
-	};
-	const goColor = goColorMap[go.status];
+	const goColor = GO_COLOR_MAP[go.status];
 	lines.push(fmt("dim", "─".repeat(40)));
-	lines.push(`${fmt(goColor, `${icon} OpenCode Go`)} ${fmt("dim", "— " + statusText[go.status])}`);
+	lines.push(`${fmt(goColor, `${icon} OpenCode Go`)} ${fmt("dim", "— " + GO_STATUS_TEXT[go.status])}`);
 
 	const goWindows = [
 		{
