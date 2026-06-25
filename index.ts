@@ -1,8 +1,8 @@
 /**
  * pi-usage — Usage limit checker for pi coding agent
  *
- * Checks Codex (5hr & weekly) and OpenCode Go usage limits at startup
- * and displays a clean summary widget above the editor.
+ * Checks Codex (5hr & weekly) and OpenCode Go usage limits at startup.
+ * Displays a startup report by default; persistent widget is opt-in.
  *
  * Also provides `/usage` command to refresh on demand.
  *
@@ -125,9 +125,15 @@ interface OpenCodeGoQuotaResult {
 	error?: string;
 }
 
+type RefreshTrigger = "startup" | "manual" | "auto";
+
 // ───────── Config ─────────
 
 const WIDGET_ID = "pi-usage";
+const USAGE_WIDGET_FLAG = "usage-widget";
+const NO_USAGE_WIDGET_FLAG = "no-usage-widget";
+const USAGE_CONFIG_FILE = "pi-usage.json";
+const USAGE_WIDGET_HELP = `Widget disabled. Enable: add {"showWidget": true} to ${USAGE_CONFIG_FILE} or run with --${USAGE_WIDGET_FLAG}.`;
 const CHECK_TIMEOUT_MS = 15_000;
 const BODY_READ_TIMEOUT_MS = CHECK_TIMEOUT_MS;
 const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
@@ -160,6 +166,24 @@ function parseEnvInt(name: string, fallback: number): number {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseBoolValue(value: string | undefined): boolean | undefined {
+	if (value === undefined) return undefined;
+	switch (value.trim().toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		case "0":
+		case "false":
+		case "no":
+		case "off":
+			return false;
+		default:
+			return undefined;
+	}
+}
+
 function agentDir(): string {
 	const dir = process.env.PI_CODING_AGENT_DIR || "~/.pi/agent";
 	return dir.startsWith("~") ? path.join(os.homedir(), dir.slice(1)) : dir;
@@ -167,6 +191,43 @@ function agentDir(): string {
 
 function authJsonPath(): string {
 	return path.join(agentDir(), "auth.json");
+}
+
+function usageConfigPath(): string {
+	return path.join(agentDir(), USAGE_CONFIG_FILE);
+}
+
+function readJsonObject(filePath: string): Record<string, unknown> | undefined {
+	try {
+		if (!fs.existsSync(filePath)) return undefined;
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed as Record<string, unknown>
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseBoolSetting(value: unknown): boolean | undefined {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") return parseBoolValue(value);
+	return undefined;
+}
+
+function widgetSettingFromConfig(config: Record<string, unknown> | undefined): boolean | undefined {
+	if (!config) return undefined;
+	return parseBoolSetting(config.showWidget) ?? parseBoolSetting(config.widget);
+}
+
+function readUsageWidgetSetting(ctx?: any): boolean | undefined {
+	let value = widgetSettingFromConfig(readJsonObject(usageConfigPath()));
+	const isProjectTrusted = typeof ctx?.isProjectTrusted === "function" && ctx.isProjectTrusted();
+	if (isProjectTrusted) {
+		const projectValue = widgetSettingFromConfig(readJsonObject(path.join(ctx.cwd, ".pi", USAGE_CONFIG_FILE)));
+		if (projectValue !== undefined) value = projectValue;
+	}
+	return value;
 }
 
 function parseAuthJson(content: string | undefined): AuthJson {
@@ -1235,6 +1296,96 @@ function buildUsageWidget(
 	return new Text(lines.join("\n"), 0, 0);
 }
 
+function buildStartupUsageMessage(
+	codex: CodexUsage | undefined,
+	go: OpenCodeGoUsage | undefined,
+	includeHelp: boolean,
+): string {
+	const lines: string[] = [];
+	const sep = "─";
+	lines.push("⚡ Usage Limits");
+
+	if (codex) {
+		lines.push(sep.repeat(40));
+		if (codex.error) {
+			lines.push(`✗ Codex — ${codex.error}`);
+		} else {
+			const planLabel = codex.planType !== "unknown" ? ` (${codex.planType})` : "";
+			const limitLabel = codex.activeLimit !== "unknown" && codex.activeLimit !== "normal"
+				? ` [${codex.activeLimit}]`
+				: "";
+			const p5Window = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
+			const p5Reset = codex.primaryResetAt > 0
+				? ` resets ${formatResetTime(codex.primaryResetAt)}`
+				: codex.primaryResetAfterSeconds > 0
+					? ` resets in ${formatDuration(codex.primaryResetAfterSeconds)}`
+					: "";
+			const pWReset = codex.secondaryResetAt > 0
+				? ` resets ${formatResetTime(codex.secondaryResetAt)}`
+				: codex.secondaryResetAfterSeconds > 0
+					? ` resets in ${formatDuration(codex.secondaryResetAfterSeconds)}`
+					: "";
+			lines.push(`Codex${planLabel}${limitLabel}`);
+			lines.push(`  ${p5Window}  ${progressBar(codex.primaryUsedPercent)} ${codex.primaryUsedPercent.toFixed(0)}%${p5Reset}`);
+			lines.push(`  week  ${progressBar(codex.secondaryUsedPercent)} ${codex.secondaryUsedPercent.toFixed(0)}%${pWReset}`);
+			if (codex.codeReviewUsedPercent !== undefined) {
+				const pCReset = codex.codeReviewResetAt
+					? ` resets ${formatResetTime(codex.codeReviewResetAt)}`
+					: codex.codeReviewResetAfterSeconds
+						? ` resets in ${formatDuration(codex.codeReviewResetAfterSeconds)}`
+						: "";
+				lines.push(`  review ${progressBar(codex.codeReviewUsedPercent)} ${codex.codeReviewUsedPercent.toFixed(0)}%${pCReset}`);
+			}
+		}
+	} else {
+		lines.push(sep.repeat(40));
+		lines.push("Codex — not configured");
+	}
+
+	if (go) {
+		lines.push(sep.repeat(40));
+		const statusText: Record<GoModelStatus, string> = {
+			available: "available",
+			rate_limited: "rate limited",
+			credits_error: "credits exhausted",
+			error: "error",
+			no_key: "no key",
+		};
+		lines.push(`${statusIcon(go.status)} OpenCode Go — ${statusText[go.status]}`);
+		const goWindows = [
+			{ label: "rolling", used: go.rollingUsedPercent, remaining: go.rollingRemainingPercent, resetAt: go.rollingResetAt, resetAfterSeconds: go.rollingResetAfterSeconds },
+			{ label: "week", used: go.weeklyUsedPercent, remaining: go.weeklyRemainingPercent, resetAt: go.weeklyResetAt, resetAfterSeconds: go.weeklyResetAfterSeconds },
+			{ label: "month", used: go.monthlyUsedPercent, remaining: go.monthlyRemainingPercent, resetAt: go.monthlyResetAt, resetAfterSeconds: go.monthlyResetAfterSeconds },
+		];
+		for (const goWindow of goWindows) {
+			if (goWindow.used === undefined) continue;
+			const reset = goWindow.resetAt
+				? ` resets ${formatResetTime(goWindow.resetAt)}`
+				: goWindow.resetAfterSeconds !== undefined
+					? ` resets in ${formatDuration(goWindow.resetAfterSeconds)}`
+					: "";
+			const remaining = goWindow.remaining !== undefined ? ` / ${goWindow.remaining.toFixed(0)}% left` : "";
+			lines.push(`  ${goWindow.label.padEnd(7)} ${progressBar(goWindow.used)} ${goWindow.used.toFixed(0)}% used${remaining}${reset}`);
+		}
+		if (go.quotaError) lines.push(`  quota: ${go.quotaError.substring(0, 80)}`);
+		if (go.workingModel) lines.push(`  working: ${go.workingModel}`);
+		if (go.checkedModels && go.totalModels) lines.push(`  checked: ${go.checkedModels}/${go.totalModels} Go models`);
+		if (go.rateLimitedModel) lines.push(`  limited: ${go.rateLimitedModel}`);
+		if (go.errorMessage) lines.push(`  ${go.errorMessage.substring(0, 80)}`);
+		if (go.error) lines.push(`  ${go.error.substring(0, 80)}`);
+	} else {
+		lines.push(sep.repeat(40));
+		lines.push("OpenCode Go — not configured");
+	}
+
+	if (includeHelp) {
+		lines.push(sep.repeat(40));
+		lines.push(USAGE_WIDGET_HELP);
+	}
+
+	return lines.join("\n");
+}
+
 // ───────── Status Line ─────────
 
 function footerResetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
@@ -1300,22 +1451,47 @@ function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage &
 // ───────── Extension ─────────
 
 export default function (pi: ExtensionAPI) {
+	pi.registerFlag(USAGE_WIDGET_FLAG, {
+		description: "Display pi-usage as a persistent widget above the editor",
+		type: "boolean",
+		default: false,
+	});
+	pi.registerFlag(NO_USAGE_WIDGET_FLAG, {
+		description: "Disable the pi-usage persistent widget for this run",
+		type: "boolean",
+		default: false,
+	});
+
 	let codexUsage: CodexUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
 	let isLoading = false;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let currentCtx: any;
 
-	async function refreshUsage(ctx: any): Promise<void> {
+	function isUsageWidgetEnabled(ctx: any): boolean {
+		if (pi.getFlag(NO_USAGE_WIDGET_FLAG) === true) return false;
+		if (pi.getFlag(USAGE_WIDGET_FLAG) === true) return true;
+		return readUsageWidgetSetting(ctx) ?? false;
+	}
+
+	async function refreshUsage(ctx: any, trigger: RefreshTrigger = "manual"): Promise<void> {
 		if (isLoading) return;
 		isLoading = true;
 		currentCtx = ctx;
 
+		const showWidget = isUsageWidgetEnabled(ctx);
+		const showStartupReport = !showWidget && trigger !== "auto";
+
 		// Show loading state
 		if (ctx.hasUI) {
-			ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
-				buildUsageWidget(codexUsage, goUsage, theme, true),
-			);
+			if (showWidget) {
+				ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
+					buildUsageWidget(codexUsage, goUsage, theme, true),
+				);
+			} else {
+				ctx.ui.setWidget(WIDGET_ID, undefined);
+				if (showStartupReport) ctx.ui.notify("⚡ Checking usage limits...", "info");
+			}
 		}
 
 		const checks: Promise<void>[] = [];
@@ -1348,45 +1524,35 @@ export default function (pi: ExtensionAPI) {
 
 		isLoading = false;
 
-		// Update widget with results
+		// Update display with results
 		if (ctx.hasUI) {
-			ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
-				buildUsageWidget(codexUsage, goUsage, theme, false),
-			);
+			const showWidgetAfterRefresh = isUsageWidgetEnabled(ctx);
+			if (showWidgetAfterRefresh) {
+				ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
+					buildUsageWidget(codexUsage, goUsage, theme, false),
+				);
+			} else {
+				ctx.ui.setWidget(WIDGET_ID, undefined);
+				if (trigger !== "auto") {
+					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
+				}
+			}
 
 			// Footer status
 			updateFooterStatus(ctx, codexUsage, goUsage);
-
-			// Quick notification
-			const parts: string[] = [];
-			if (codexUsageHasData(codexUsage)) {
-				const limited = codexUsage.activeLimit === "rate_limited" ? " limited" : "";
-				parts.push(`Codex${limited} 5hr:${codexUsage.primaryUsedPercent.toFixed(0)}% week:${codexUsage.secondaryUsedPercent.toFixed(0)}%`);
-			} else if (codexUsage?.error) {
-				parts.push(`Codex: ✗ ${codexUsage.error.substring(0, 30)}`);
-			}
-			if (goUsage) {
-				parts.push(`Go:${goFooterSummary(goUsage)}`);
-			}
-			if (parts.length > 0) {
-				ctx.ui.notify(`⚡ ${parts.join(" │ ")}`, "info");
-			}
 		}
 	}
 
-	// ── Startup check ──
+	// ── Startup check + auto-refresh ──
 	pi.on("session_start", async (event, ctx) => {
+		currentCtx = ctx;
 		if (event.reason === "startup" || event.reason === "reload") {
 			// Small delay to let TUI settle
-			setTimeout(() => refreshUsage(ctx), 500);
+			setTimeout(() => refreshUsage(ctx, "startup").catch(() => {}), 500);
 		}
-	});
-
-	// ── Auto-refresh ──
-	pi.on("session_start", async (_event, ctx) => {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
-			if (currentCtx) refreshUsage(currentCtx).catch(() => {});
+			if (currentCtx) refreshUsage(currentCtx, "auto").catch(() => {});
 		}, AUTO_REFRESH_MINUTES * 60 * 1000);
 	});
 
@@ -1401,7 +1567,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("usage", {
 		description: "Refresh and show Codex & OpenCode Go usage limits",
 		handler: async (_args, ctx) => {
-			await refreshUsage(ctx);
+			await refreshUsage(ctx, "manual");
 		},
 	});
 }

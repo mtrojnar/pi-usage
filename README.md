@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex** and **OpenCode Go** usage limits at startup so you know your limits before you start coding.
+Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex** and **OpenCode Go** usage limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -22,6 +22,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 
 - `PI_CODING_AGENT_DIR` support instead of assuming `~/.pi/agent`.
 - `limited` status in the footer and startup notification when Codex reports `rate_limited`.
+- Configurable persistent widget display; default startup report includes enable instructions.
 - Safer config/model handling for falsy environment values and missing OpenCode Go model cost data.
 - Cancellation of unused response bodies to avoid stalled probe connections.
 
@@ -43,7 +44,7 @@ When pi starts up, **pi-usage** automatically:
    - Error details if credits are exhausted
    - How many documented Go models were checked before a result was found
 
-Results are displayed as a **widget above the editor** with progress bars and color-coded status, plus a **footer status line** and a **notification** at startup.
+By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. The footer status line stays updated. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
 
 ## Installation
 
@@ -143,6 +144,28 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 Usage limits are checked automatically on startup and every 30 minutes.
 
+By default, startup shows a one-time **Usage Limits** report and footer status. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
+
+```json
+{
+  "showWidget": true
+}
+```
+
+Project-local override is also supported in `.pi/pi-usage.json` after the project is trusted.
+
+For a one-off run:
+
+```bash
+pi --usage-widget
+```
+
+If you enabled it in config and want a one-off run without the widget:
+
+```bash
+pi --no-usage-widget
+```
+
 ### Manual refresh
 
 Type `/usage` in pi to refresh the display on demand.
@@ -200,10 +223,19 @@ It builds the probe list from OpenCode's documented Go models, then adds any ext
 
 ## Configuration
 
+Widget display uses pi-style extension config files:
+
+- Global: `~/.pi/agent/pi-usage.json`
+- Project: `.pi/pi-usage.json` (only after project trust)
+
+```json
+{ "showWidget": true }
+```
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PI_USAGE_REFRESH_MIN` | `30` | Auto-refresh interval in minutes |
-| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` lookup |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
 | `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |
