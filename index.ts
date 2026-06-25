@@ -1163,7 +1163,7 @@ function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, text: st
 	const lines: string[] = [];
 	if (codex.error && codex.activeLimit === "error") {
 		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(`${fmt("error", "✗ Codex")} ${fmt("dim", "— " + codex.error)}`);
+		lines.push(`${fmt("error", "✗ Codex")} ${fmt("dim", "— " + truncate(codex.error, 120))}`);
 		return lines;
 	}
 
