@@ -811,7 +811,14 @@ function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult
 	const rolling = parseOpenCodeGoUsageWindow(html, "rolling");
 	const weekly = parseOpenCodeGoUsageWindow(html, "weekly");
 	const monthly = parseOpenCodeGoUsageWindow(html, "monthly");
-	if (!rolling && !weekly && !monthly) return undefined;
+	if (!rolling && !weekly && !monthly) {
+		console.warn(
+			"pi-usage: OpenCode Go dashboard structure not recognized. " +
+			"The expected rollingUsage/weeklyUsage/monthlyUsage patterns were not found. " +
+			`HTML snippet: ${truncate(html, 300).replace(/\s+/g, " ")}`,
+		);
+		return undefined;
+	}
 
 	return {
 		rollingUsedPercent: rolling?.usedPercent,
