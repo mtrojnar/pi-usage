@@ -184,7 +184,7 @@ export function getOpenCodeGoQuotaConfig(): OpenCodeGoQuotaConfigState {
 			const fileWorkspaceId = typeof parsed.workspaceId === "string" ? parsed.workspaceId.trim() : "";
 			const fileAuthCookie = typeof parsed.authCookie === "string" ? parsed.authCookie.trim() : "";
 			if (!fileWorkspaceId || !fileAuthCookie) {
-				return { error: `${configPath} needs workspaceId and authCookie` };
+				return { error: `${path.basename(configPath)} needs workspaceId and authCookie` };
 			}
 			return {
 				config: {
@@ -195,7 +195,7 @@ export function getOpenCodeGoQuotaConfig(): OpenCodeGoQuotaConfigState {
 			};
 		} catch (e: unknown) {
 			return {
-				error: `${configPath}: ${e instanceof Error ? e.message : String(e)}`,
+				error: `${path.basename(configPath)}: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
 	}
