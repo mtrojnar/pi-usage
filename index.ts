@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
 import { getModels } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
@@ -345,19 +344,6 @@ function extractAccountId(token: string): string | undefined {
 }
 
 function resolveConfigValue(config: string): string | undefined {
-	// Shell-exec prefix: "!command" runs command to retrieve dynamic secrets.
-	// Only exploitable if attacker already has write access to auth.json.
-	if (config.startsWith("!")) {
-		try {
-			return execSync(config.slice(1), {
-				encoding: "utf8",
-				timeout: 10_000,
-				stdio: ["ignore", "pipe", "ignore"],
-			}).trim() || undefined;
-		} catch {
-			return undefined;
-		}
-	}
 	// Treat value as env var name, fall back to literal string.
 	const resolved = process.env[config];
 	return resolved !== undefined ? resolved : config;
