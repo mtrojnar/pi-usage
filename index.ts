@@ -207,6 +207,7 @@ function parseBoolValue(value: string | undefined): boolean | undefined {
 		case "off":
 			return false;
 		default:
+			console.warn(`pi-usage: unrecognized boolean "${value.trim()}" in config`);
 			return undefined;
 	}
 }
