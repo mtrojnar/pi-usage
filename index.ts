@@ -845,6 +845,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 		);
 
 		if (!response.ok) {
+			await cancelResponseBody(response);
 			return {
 				configured: true,
 				source: config.source,
