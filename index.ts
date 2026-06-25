@@ -795,17 +795,20 @@ function parseOpenCodeGoUsageWindow(
 	};
 }
 
-function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> | undefined {
+function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> {
 	const rolling = parseOpenCodeGoUsageWindow(html, "rolling");
 	const weekly = parseOpenCodeGoUsageWindow(html, "weekly");
 	const monthly = parseOpenCodeGoUsageWindow(html, "monthly");
 	if (!rolling && !weekly && !monthly) {
+		const snippet = truncate(html, 300).replace(/\s+/g, " ");
 		console.warn(
 			"pi-usage: OpenCode Go dashboard structure not recognized. " +
 			"The expected rollingUsage/weeklyUsage/monthlyUsage patterns were not found. " +
-			`HTML snippet: ${truncate(html, 300).replace(/\s+/g, " ")}`,
+			`HTML snippet: ${snippet}`,
 		);
-		return undefined;
+		return {
+			error: `OpenCode Go dashboard structure not recognized. HTML: ${snippet}`,
+		};
 	}
 
 	return {
@@ -852,11 +855,11 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 
 		const html = await readResponseText(response);
 		const parsed = parseOpenCodeGoDashboardUsage(html);
-		if (!parsed) {
+		if (parsed.error) {
 			return {
 				configured: true,
 				source: config.source,
-				error: "OpenCode Go quota data was not found in the dashboard response",
+				error: parsed.error,
 			};
 		}
 
