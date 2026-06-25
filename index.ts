@@ -16,7 +16,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getModels } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionUIContext,
+	Theme,
+	ThemeColor,
+} from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 // ───────── Types ─────────
@@ -126,6 +131,13 @@ interface OpenCodeGoQuotaResult {
 
 type RefreshTrigger = "startup" | "manual" | "auto";
 
+interface UsageContext {
+	hasUI: boolean;
+	cwd: string;
+	ui: ExtensionUIContext;
+	isProjectTrusted?(): boolean;
+}
+
 // ───────── Config ─────────
 
 const WIDGET_ID = "pi-usage";
@@ -159,7 +171,7 @@ const DOCUMENTED_GO_MODELS: GoCheckModel[] = [
 	{ id: "glm-5.1", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 10 },
 ];
 
-const GO_COLOR_MAP: Record<GoModelStatus, string> = {
+const GO_COLOR_MAP: Record<GoModelStatus, ThemeColor> = {
 	available: "success",
 	rate_limited: "warning",
 	credits_error: "error",
@@ -236,7 +248,7 @@ function widgetSettingFromConfig(config: Record<string, unknown> | undefined): b
 	return parseBoolSetting(config.showWidget) ?? parseBoolSetting(config.widget);
 }
 
-function readUsageWidgetSetting(ctx?: any): boolean | undefined {
+function readUsageWidgetSetting(ctx?: UsageContext): boolean | undefined {
 	let value = widgetSettingFromConfig(readJsonObject(usageConfigPath()));
 	const isProjectTrusted = typeof ctx?.isProjectTrusted === "function" && ctx.isProjectTrusted();
 	if (isProjectTrusted) {
@@ -424,7 +436,7 @@ function progressBar(percent: number, width: number = 20): string {
 	return "█".repeat(filled) + "░".repeat(empty);
 }
 
-function usageColor(percent: number): string {
+function usageColor(percent: number): ThemeColor {
 	if (percent >= 90) return "error";
 	if (percent >= 70) return "warning";
 	return "success";
@@ -1139,7 +1151,7 @@ async function checkOpenCodeGoUsage(
 
 // ───────── Widget Rendering ─────────
 
-function renderCodexWindows(codex: CodexUsage, fmt: (color: string, text: string) => string, useColor: boolean): string[] {
+function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
 	const lines: string[] = [];
 	if (codex.error && codex.activeLimit === "error") {
 		lines.push(fmt("dim", "─".repeat(40)));
@@ -1207,7 +1219,7 @@ function renderCodexWindows(codex: CodexUsage, fmt: (color: string, text: string
 	return lines;
 }
 
-function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: string, text: string) => string, useColor: boolean): string[] {
+function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
 	const lines: string[] = [];
 
 	const icon = statusIcon(go.status);
@@ -1261,7 +1273,7 @@ function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: string, text: string)
 function buildUsageWidget(
 	codex: CodexUsage | undefined,
 	go: OpenCodeGoUsage | undefined,
-	theme: any,
+	theme: Theme,
 	loading: boolean,
 ): Text {
 	if (loading) {
@@ -1269,7 +1281,7 @@ function buildUsageWidget(
 	}
 
 	const lines: string[] = [];
-	const fmt = (color: string, text: string) => theme.fg(color, text);
+	const fmt = (color: ThemeColor, text: string) => theme.fg(color, text);
 
 	lines.push(theme.bold(fmt("accent", "⚡ Usage Limits")));
 
@@ -1296,7 +1308,7 @@ function buildStartupUsageMessage(
 	includeHelp: boolean,
 ): string {
 	const lines: string[] = [];
-	const fmt = (_color: string, text: string) => text;
+	const fmt = (_color: ThemeColor, text: string) => text;
 
 	lines.push("⚡ Usage Limits");
 
@@ -1340,7 +1352,7 @@ function footerUsageColor(usedPercent: number): "dim" | "accent" | "warning" | "
 
 function footerWindowSummary(
 	usedPercent: number,
-	theme: any,
+	theme: Theme,
 	resetAt?: number,
 	resetAfterSeconds?: number,
 	suffix: string = "",
@@ -1352,14 +1364,14 @@ function footerWindowSummary(
 	return theme.fg(footerUsageColor(usedPercent), text);
 }
 
-function codexFooterSummary(codex: CodexUsage, theme: any): string {
+function codexFooterSummary(codex: CodexUsage, theme: Theme): string {
 	return [
 		footerWindowSummary(codex.primaryUsedPercent, theme, codex.primaryResetAt, codex.primaryResetAfterSeconds),
 		footerWindowSummary(codex.secondaryUsedPercent, theme, codex.secondaryResetAt, codex.secondaryResetAfterSeconds),
 	].join(theme.fg("dim", ","));
 }
 
-function goFooterSummary(go: OpenCodeGoUsage, theme: any): string {
+function goFooterSummary(go: OpenCodeGoUsage, theme: Theme): string {
 	const quotaParts: string[] = [];
 	if (go.rollingUsedPercent !== undefined) {
 		quotaParts.push(footerWindowSummary(go.rollingUsedPercent, theme, go.rollingResetAt, go.rollingResetAfterSeconds, "r"));
@@ -1373,7 +1385,7 @@ function goFooterSummary(go: OpenCodeGoUsage, theme: any): string {
 	return quotaParts.length > 0 ? quotaParts.join(theme.fg("dim", ",")) : theme.fg("dim", statusIcon(go.status));
 }
 
-function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
+function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
 	if (!ctx.hasUI) return;
 
 	const theme = ctx.ui.theme;
@@ -1415,15 +1427,15 @@ export default function (pi: ExtensionAPI) {
 	let goUsage: OpenCodeGoUsage | undefined;
 	let isLoading = false;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
-	let currentCtx: any;
+	let currentCtx: UsageContext | undefined;
 
-	function isUsageWidgetEnabled(ctx: any): boolean {
+	function isUsageWidgetEnabled(ctx: UsageContext): boolean {
 		if (pi.getFlag(NO_USAGE_WIDGET_FLAG) === true) return false;
 		if (pi.getFlag(USAGE_WIDGET_FLAG) === true) return true;
 		return readUsageWidgetSetting(ctx) ?? false;
 	}
 
-	async function refreshUsage(ctx: any, trigger: RefreshTrigger = "manual"): Promise<void> {
+	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
 		if (isLoading) return;
 		isLoading = true;
 		currentCtx = ctx;
@@ -1434,7 +1446,7 @@ export default function (pi: ExtensionAPI) {
 		// Show loading state
 		if (ctx.hasUI) {
 			if (showWidget) {
-				ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
+				ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
 					buildUsageWidget(codexUsage, goUsage, theme, true),
 				);
 			} else {
@@ -1477,7 +1489,7 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			const showWidgetAfterRefresh = isUsageWidgetEnabled(ctx);
 			if (showWidgetAfterRefresh) {
-				ctx.ui.setWidget(WIDGET_ID, (_tui: any, theme: any) =>
+				ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
 					buildUsageWidget(codexUsage, goUsage, theme, false),
 				);
 			} else {
