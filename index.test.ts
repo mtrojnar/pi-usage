@@ -4,7 +4,8 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
+import * as fs from "node:fs";
 import {
 	clampPercent,
 	formatDuration,
@@ -12,14 +13,21 @@ import {
 	parseHeaderBool,
 	parseHeaderNumber,
 	progressBar,
+	statusIcon,
 	truncate,
 	usageColor,
 } from "./src/format.ts";
 import {
+	configPathCandidates,
 	dedupe,
+	extractAccountId,
+	getOpenCodeGoQuotaConfig,
 	parseBoolValue,
 	parseEnvInt,
+	readJsonObject,
 	resolveConfigValue,
+	validatePrivateConfigFile,
+	widgetSettingFromConfig,
 } from "./src/config.ts";
 import {
 	windowMinutes,
@@ -28,14 +36,29 @@ import {
 	windowUsedPercent,
 } from "./src/codex.ts";
 import {
+	cancelResponseBody,
+	readResponseText,
+} from "./src/http.ts";
+import {
+	codexUsageHasData,
 	footerResetDuration,
 	footerUsageColor,
+	goUsageHasData,
+	buildStartupUsageMessage,
+	buildUsageWidget,
+	renderCodexWindows,
+	renderGoWindows,
 } from "./src/render.ts";
 import {
 	isGlobalGoLimit,
 	isPerModelUnavailable,
+	parseOpenCodeGoDashboardUsage,
+	parseOpenCodeGoUsageWindow,
 	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
+import type {
+	OpenCodeGoUsage,
+} from "./src/types.ts";
 
 // ───────── parseEnvInt ─────────
 
@@ -585,5 +608,728 @@ describe("progressBar integration", () => {
 		assert.equal(bar(10), "█".repeat(1) + "░".repeat(9));
 		assert.equal(bar(50), "█".repeat(5) + "░".repeat(5));
 		assert.equal(bar(100), "█".repeat(10));
+	});
+});
+
+// ───────── statusIcon ─────────
+
+describe("statusIcon", () => {
+	it("returns check for available", () => {
+		assert.equal(statusIcon("available"), "✓");
+	});
+
+	it("returns hourglass for rate_limited", () => {
+		assert.equal(statusIcon("rate_limited"), "⏳");
+	});
+
+	it("returns cross for credits_error", () => {
+		assert.equal(statusIcon("credits_error"), "✗");
+	});
+
+	it("returns warning for error", () => {
+		assert.equal(statusIcon("error"), "⚠");
+	});
+
+	it("returns em-dash for no_key", () => {
+		assert.equal(statusIcon("no_key"), "—");
+	});
+});
+
+// ───────── codexUsageHasData ─────────
+
+describe("codexUsageHasData", () => {
+	it("returns true for normal usage", () => {
+		assert.equal(codexUsageHasData({ activeLimit: "normal", error: undefined } as any), true);
+	});
+
+	it("returns false for undefined", () => {
+		assert.equal(codexUsageHasData(undefined), false);
+	});
+
+	it("returns false when error is set", () => {
+		assert.equal(codexUsageHasData({ activeLimit: "normal", error: "some error" } as any), false);
+	});
+
+	it("returns false when activeLimit is error", () => {
+		assert.equal(codexUsageHasData({ activeLimit: "error", error: undefined } as any), false);
+	});
+});
+
+// ───────── goUsageHasData ─────────
+
+describe("goUsageHasData", () => {
+	it("returns true for available status", () => {
+		assert.equal(goUsageHasData({ status: "available" } as any), true);
+	});
+
+	it("returns true for rate_limited", () => {
+		assert.equal(goUsageHasData({ status: "rate_limited" } as any), true);
+	});
+
+	it("returns false for undefined", () => {
+		assert.equal(goUsageHasData(undefined), false);
+	});
+
+	it("returns false for no_key", () => {
+		assert.equal(goUsageHasData({ status: "no_key" } as any), false);
+	});
+});
+
+// ───────── extractAccountId ─────────
+
+describe("extractAccountId", () => {
+	it("extracts account ID from valid JWT", () => {
+		const payload = Buffer.from(JSON.stringify({
+			"https://api.openai.com/auth": { chatgpt_account_id: "acc_123" },
+		})).toString("base64url");
+		const token = `header.${payload}.signature`;
+		assert.equal(extractAccountId(token), "acc_123");
+	});
+
+	it("returns undefined for non-3-part token", () => {
+		assert.equal(extractAccountId("invalid.token"), undefined);
+	});
+
+	it("returns undefined for malformed payload", () => {
+		const token = "header.invalid-base64!.signature";
+		assert.equal(extractAccountId(token), undefined);
+	});
+
+	it("returns undefined for missing account ID", () => {
+		const payload = Buffer.from(JSON.stringify({})).toString("base64url");
+		const token = `header.${payload}.signature`;
+		assert.equal(extractAccountId(token), undefined);
+	});
+});
+
+// ───────── readResponseText ─────────
+
+describe("readResponseText", () => {
+	it("returns empty string for null body", async () => {
+		const response = new Response(null);
+		assert.equal(await readResponseText(response), "");
+	});
+
+	it("reads text body correctly", async () => {
+		const response = new Response("hello world");
+		assert.equal(await readResponseText(response), "hello world");
+	});
+
+	it("reads empty body", async () => {
+		const response = new Response("");
+		assert.equal(await readResponseText(response), "");
+	});
+
+	it("reads multi-chunk body", async () => {
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode("chunk1"));
+				controller.enqueue(encoder.encode("chunk2"));
+				controller.close();
+			},
+		});
+		const response = new Response(stream);
+		assert.equal(await readResponseText(response), "chunk1chunk2");
+	});
+
+	it("handles large body close to size limit", async () => {
+		const data = "x".repeat(512_000);
+		const response = new Response(data);
+		const text = await readResponseText(response);
+		assert.equal(text.length, 512_000);
+	});
+
+	it("rejects when body exceeds size limit", async () => {
+		const data = "x".repeat(512_001);
+		const response = new Response(data);
+		await assert.rejects(
+			readResponseText(response),
+			/Response body exceeded/,
+		);
+	});
+
+	it("reads JSON body", async () => {
+		const response = new Response(JSON.stringify({ key: "value" }));
+		assert.equal(await readResponseText(response), '{"key":"value"}');
+	});
+});
+
+// ───────── cancelResponseBody ─────────
+
+describe("cancelResponseBody", () => {
+	it("handles null body gracefully", async () => {
+		const response = new Response(null);
+		await cancelResponseBody(response);
+	});
+
+	it("cancels body stream", async () => {
+		const response = new Response("test");
+		await cancelResponseBody(response);
+	});
+});
+
+// ───────── renderCodexWindows ─────────
+
+describe("renderCodexWindows", () => {
+	const identity = (_color: string, text: string) => text;
+
+	it("renders code review and credits when present", () => {
+		const future = Math.floor(Date.now() / 1000) + 3600;
+		const result = renderCodexWindows(
+			{
+				planType: "plus",
+				activeLimit: "normal",
+				primaryUsedPercent: 42,
+				secondaryUsedPercent: 60,
+				codeReviewUsedPercent: 10,
+				primaryWindowMinutes: 300,
+				secondaryWindowMinutes: 10080,
+				codeReviewWindowMinutes: 1440,
+				primaryResetAfterSeconds: 0,
+				secondaryResetAfterSeconds: 0,
+				primaryResetAt: 0,
+				secondaryResetAt: 0,
+				codeReviewResetAt: undefined,
+				codeReviewResetAfterSeconds: 86400,
+				primaryOverSecondaryLimitPercent: 10,
+				creditsHasCredits: true,
+				creditsBalance: "$5.00",
+				creditsUnlimited: false,
+				source: "usage_api",
+			},
+			identity as any,
+			false,
+		);
+		const joined = result.join("\n");
+		assert.match(joined, /Codex/);
+		assert.match(joined, /plus/);
+		assert.match(joined, /review/);
+		assert.match(joined, /credits/);
+		assert.match(joined, /\$5\.00/);
+		assert.match(joined, /10%/);
+		assert.match(joined, /42%/);
+		assert.match(joined, /60%/);
+	});
+
+	it("shows plan type when non-unknown", () => {
+		const result = renderCodexWindows(
+			{
+				planType: "enterprise",
+				activeLimit: "normal",
+				primaryUsedPercent: 10,
+				secondaryUsedPercent: 20,
+				primaryWindowMinutes: 300,
+				secondaryWindowMinutes: 10080,
+				primaryResetAfterSeconds: 0,
+				secondaryResetAfterSeconds: 0,
+				primaryResetAt: 0,
+				secondaryResetAt: 0,
+				primaryOverSecondaryLimitPercent: 0,
+				creditsHasCredits: false,
+				creditsBalance: "",
+				creditsUnlimited: false,
+				source: "usage_api",
+			},
+			identity as any,
+			false,
+		);
+		assert.match(result.join("\n"), /enterprise/);
+	});
+
+	it("renders error state", () => {
+		const result = renderCodexWindows(
+			{
+				planType: "unknown",
+				activeLimit: "error",
+				primaryUsedPercent: 0,
+				secondaryUsedPercent: 0,
+				primaryWindowMinutes: 300,
+				secondaryWindowMinutes: 10080,
+				primaryResetAfterSeconds: 0,
+				secondaryResetAfterSeconds: 0,
+				primaryResetAt: 0,
+				secondaryResetAt: 0,
+				primaryOverSecondaryLimitPercent: 0,
+				creditsHasCredits: false,
+				creditsBalance: "",
+				creditsUnlimited: false,
+				source: "probe",
+				error: "API connection failed",
+			},
+			identity as any,
+			false,
+		);
+		assert.match(result.join("\n"), /✗ Codex/);
+		assert.match(result.join("\n"), /API connection failed/);
+	});
+
+	it("shows rate_limited label", () => {
+		const result = renderCodexWindows(
+			{
+				planType: "unknown",
+				activeLimit: "rate_limited",
+				primaryUsedPercent: 100,
+				secondaryUsedPercent: 50,
+				primaryWindowMinutes: 300,
+				secondaryWindowMinutes: 10080,
+				primaryResetAfterSeconds: 0,
+				secondaryResetAfterSeconds: 0,
+				primaryResetAt: Math.floor(Date.now() / 1000) + 300,
+				secondaryResetAt: 0,
+				primaryOverSecondaryLimitPercent: 0,
+				creditsHasCredits: false,
+				creditsBalance: "",
+				creditsUnlimited: false,
+				source: "probe",
+				error: "Rate limited (429)",
+			},
+			identity as any,
+			false,
+		);
+		assert.match(result.join("\n"), /rate_limited/);
+	});
+});
+
+// ───────── renderGoWindows ─────────
+
+describe("renderGoWindows", () => {
+	const identity = (_color: string, text: string) => text;
+
+	it("renders quota data windows", () => {
+		const go: OpenCodeGoUsage = {
+			available: true,
+			status: "available",
+			rollingUsedPercent: 20,
+			rollingRemainingPercent: 80,
+			rollingResetAfterSeconds: 11520,
+			rollingResetAt: 0,
+			weeklyUsedPercent: 40,
+			weeklyRemainingPercent: 60,
+			weeklyResetAfterSeconds: 0,
+			weeklyResetAt: Math.floor(Date.now() / 1000) + 604800,
+			monthlyUsedPercent: 60,
+			monthlyRemainingPercent: 40,
+			monthlyResetAfterSeconds: 0,
+			monthlyResetAt: Math.floor(Date.now() / 1000) + 2592000,
+			quotaConfigured: true,
+			quotaSource: "/path/to/config",
+		};
+		const result = renderGoWindows(go, identity as any, false);
+		const joined = result.join("\n");
+		assert.match(joined, /OpenCode Go/);
+		assert.match(joined, /20%/);
+		assert.match(joined, /40%/);
+		assert.match(joined, /60%/);
+		assert.match(joined, /rolling/);
+		assert.match(joined, /week/);
+		assert.match(joined, /month/);
+	});
+
+	it("renders no_key status", () => {
+		const go: OpenCodeGoUsage = {
+			available: false,
+			status: "no_key",
+		};
+		const result = renderGoWindows(go, identity as any, false);
+		assert.match(result.join("\n"), /no key/);
+	});
+
+	it("renders rate_limited with error message", () => {
+		const go: OpenCodeGoUsage = {
+			available: false,
+			status: "rate_limited",
+			rateLimitedModel: "qwen3.5-plus",
+			errorMessage: "Rate limit exceeded",
+			checkedModels: 3,
+			totalModels: 10,
+		};
+		const result = renderGoWindows(go, identity as any, false);
+		const joined = result.join("\n");
+		assert.match(joined, /rate limited/);
+		assert.match(joined, /qwen3\.5-plus/);
+		assert.match(joined, /Rate limit exceeded/);
+		assert.match(joined, /3\/10/);
+	});
+
+	it("renders quotaError line", () => {
+		const go: OpenCodeGoUsage = {
+			available: true,
+			status: "available",
+			quotaError: "Dashboard parse error",
+			workingModel: "glm-5.1",
+		};
+		const result = renderGoWindows(go, identity as any, false);
+		const joined = result.join("\n");
+		assert.match(joined, /Dashboard parse error/);
+		assert.match(joined, /glm-5\.1/);
+	});
+
+	it("renders with color when useColor=true", () => {
+		const go: OpenCodeGoUsage = {
+			available: true,
+			status: "available",
+			rollingUsedPercent: 50,
+			rollingRemainingPercent: 50,
+			rollingResetAfterSeconds: 3600,
+		};
+		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
+		const result = renderGoWindows(go, colorFmt as any, true);
+		const joined = result.join("\n");
+		assert.match(joined, /\[success/);
+	});
+});
+
+// ───────── buildUsageWidget ─────────
+
+describe("buildUsageWidget", () => {
+	const mockTheme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as any;
+
+	it("renders loading state", () => {
+		const result = buildUsageWidget(undefined, undefined, mockTheme, true);
+		assert.match(result.text, /Checking usage limits/);
+	});
+
+	it("renders with both services configured", () => {
+		const codex: any = {
+			planType: "plus",
+			activeLimit: "normal",
+			primaryUsedPercent: 30,
+			secondaryUsedPercent: 40,
+			primaryWindowMinutes: 300,
+			secondaryWindowMinutes: 10080,
+			primaryResetAfterSeconds: 0,
+			secondaryResetAfterSeconds: 0,
+			primaryResetAt: 0,
+			secondaryResetAt: 0,
+			primaryOverSecondaryLimitPercent: 0,
+			creditsHasCredits: false,
+			creditsBalance: "",
+			creditsUnlimited: false,
+			source: "usage_api",
+		};
+		const go: OpenCodeGoUsage = {
+			available: true,
+			status: "available",
+		};
+		const result = buildUsageWidget(codex, go, mockTheme, false);
+		assert.match(result.text, /Usage Limits/);
+		assert.match(result.text, /Codex/);
+		assert.match(result.text, /OpenCode Go/);
+	});
+
+	it("shows 'not configured' when services missing", () => {
+		const result = buildUsageWidget(undefined, undefined, mockTheme, false);
+		assert.match(result.text, /not configured/);
+		assert.match(result.text, /Codex/);
+		assert.match(result.text, /OpenCode Go/);
+	});
+
+	it("shows partial services", () => {
+		const codex: any = {
+			planType: "unknown",
+			activeLimit: "normal",
+			primaryUsedPercent: 50,
+			secondaryUsedPercent: 50,
+			primaryWindowMinutes: 300,
+			secondaryWindowMinutes: 10080,
+			primaryResetAfterSeconds: 0,
+			secondaryResetAfterSeconds: 0,
+			primaryResetAt: 0,
+			secondaryResetAt: 0,
+			primaryOverSecondaryLimitPercent: 0,
+			creditsHasCredits: false,
+			creditsBalance: "",
+			creditsUnlimited: false,
+			source: "usage_api",
+		};
+		const result = buildUsageWidget(codex, undefined, mockTheme, false);
+		assert.match(result.text, /Codex/);
+		assert.match(result.text, /OpenCode Go.*not configured/);
+	});
+});
+
+// ───────── buildStartupUsageMessage ─────────
+
+describe("buildStartupUsageMessage", () => {
+	it("includes help when requested", () => {
+		const result = buildStartupUsageMessage(undefined, undefined, true);
+		assert.match(result, /showWidget/);
+	});
+
+	it("omits help when not requested", () => {
+		const result = buildStartupUsageMessage(undefined, undefined, false);
+		assert.doesNotMatch(result, /showWidget/);
+	});
+
+	it("renders both services", () => {
+		const codex: any = {
+			planType: "plus",
+			activeLimit: "normal",
+			primaryUsedPercent: 30,
+			secondaryUsedPercent: 40,
+			primaryWindowMinutes: 300,
+			secondaryWindowMinutes: 10080,
+			primaryResetAfterSeconds: 0,
+			secondaryResetAfterSeconds: 0,
+			primaryResetAt: 0,
+			secondaryResetAt: 0,
+			primaryOverSecondaryLimitPercent: 0,
+			creditsHasCredits: false,
+			creditsBalance: "",
+			creditsUnlimited: false,
+			source: "usage_api",
+		};
+		const go: OpenCodeGoUsage = {
+			available: true,
+			status: "available",
+		};
+		const result = buildStartupUsageMessage(codex, go, false);
+		assert.match(result, /Usage Limits/);
+		assert.match(result, /Codex/);
+		assert.match(result, /OpenCode Go/);
+	});
+
+	it("shows not configured for missing services", () => {
+		const result = buildStartupUsageMessage(undefined, undefined, false);
+		assert.match(result, /Codex.*not configured/);
+		assert.match(result, /OpenCode Go.*not configured/);
+	});
+});
+
+// ───────── configPathCandidates ─────────
+
+describe("configPathCandidates", () => {
+	afterEach(() => {
+		delete process.env.OPENCODE_GO_QUOTA_CONFIG;
+		delete process.env.XDG_CONFIG_HOME;
+	});
+
+	it("includes explicit env var path", () => {
+		process.env.OPENCODE_GO_QUOTA_CONFIG = "/custom/path/opencode-go.json";
+		const result = configPathCandidates("opencode-go.json");
+		assert.ok(result.includes("/custom/path/opencode-go.json"));
+	});
+
+	it("includes XDG_CONFIG_HOME path", () => {
+		process.env.XDG_CONFIG_HOME = "/xdg/config";
+		const result = configPathCandidates("opencode-go.json");
+		assert.ok(result.includes("/xdg/config/opencode/opencode-go.json"));
+	});
+
+	it("includes ~/.config path", () => {
+		const result = configPathCandidates("opencode-go.json");
+		const home = process.env.HOME || "/home/user";
+		assert.ok(result.some(p => p.includes("/.config/opencode/opencode-go.json")));
+	});
+
+	it("deduplicates paths", () => {
+		process.env.OPENCODE_GO_QUOTA_CONFIG = "/some/dup.json";
+		process.env.XDG_CONFIG_HOME = "/some";
+		const result = configPathCandidates("dup.json");
+		const dups = result.filter(p => p === "/some/dup.json");
+		assert.equal(dups.length, 1);
+	});
+
+	it("returns non-empty list", () => {
+		const result = configPathCandidates("test.json");
+		assert.ok(result.length > 0);
+	});
+});
+
+// ───────── getOpenCodeGoQuotaConfig ─────────
+
+describe("getOpenCodeGoQuotaConfig", () => {
+	afterEach(() => {
+		delete process.env.OPENCODE_GO_WORKSPACE_ID;
+		delete process.env.OPENCODE_GO_AUTH_COOKIE;
+	});
+
+	it("returns config from env vars", () => {
+		process.env.OPENCODE_GO_WORKSPACE_ID = "ws-123";
+		process.env.OPENCODE_GO_AUTH_COOKIE = "cookie-value";
+		const result = getOpenCodeGoQuotaConfig();
+		assert.equal(result.config?.workspaceId, "ws-123");
+		assert.equal(result.config?.authCookie, "cookie-value");
+		assert.equal(result.config?.source, "env");
+	});
+
+	it("returns error when only one env var set", () => {
+		process.env.OPENCODE_GO_WORKSPACE_ID = "ws-123";
+		const result = getOpenCodeGoQuotaConfig();
+		assert.ok(result.error!.includes("both"));
+	});
+
+	it("returns empty state when no config found", () => {
+		const result = getOpenCodeGoQuotaConfig();
+		assert.equal(result.config, undefined);
+		assert.equal(result.error, undefined);
+	});
+});
+
+// ───────── validatePrivateConfigFile ─────────
+
+describe("validatePrivateConfigFile", () => {
+	it("throws ENOENT for non-existent file", () => {
+		assert.throws(() => validatePrivateConfigFile("/nonexistent/path.json"), /ENOENT/);
+	});
+
+	it("returns undefined for valid file", () => {
+		const tmpFile = `/tmp/pi-usage-test-${Date.now()}.json`;
+		fs.writeFileSync(tmpFile, JSON.stringify({}), { mode: 0o600 });
+		const result = validatePrivateConfigFile(tmpFile);
+		assert.equal(result, undefined);
+		fs.unlinkSync(tmpFile);
+	});
+});
+
+// ───────── readJsonObject ─────────
+
+describe("readJsonObject", () => {
+	it("returns undefined for non-existent file", () => {
+		assert.equal(readJsonObject("/nonexistent/file.json"), undefined);
+	});
+
+	it("returns undefined for invalid JSON", () => {
+		const tmpFile = `/tmp/pi-usage-test-${Date.now()}.json`;
+		fs.writeFileSync(tmpFile, "not json");
+		assert.equal(readJsonObject(tmpFile), undefined);
+		fs.unlinkSync(tmpFile);
+	});
+
+	it("returns undefined for array JSON", () => {
+		const tmpFile = `/tmp/pi-usage-test-${Date.now()}.json`;
+		fs.writeFileSync(tmpFile, JSON.stringify([1, 2, 3]));
+		assert.equal(readJsonObject(tmpFile), undefined);
+		fs.unlinkSync(tmpFile);
+	});
+
+	it("parses valid JSON object", () => {
+		const tmpFile = `/tmp/pi-usage-test-${Date.now()}.json`;
+		fs.writeFileSync(tmpFile, JSON.stringify({ key: "value" }));
+		const result = readJsonObject(tmpFile);
+		assert.deepEqual(result, { key: "value" });
+		fs.unlinkSync(tmpFile);
+	});
+});
+
+// ───────── widgetSettingFromConfig ─────────
+
+describe("widgetSettingFromConfig", () => {
+	it("returns undefined for undefined config", () => {
+		assert.equal(widgetSettingFromConfig(undefined), undefined);
+	});
+
+	it("reads showWidget boolean", () => {
+		assert.equal(widgetSettingFromConfig({ showWidget: true }), true);
+		assert.equal(widgetSettingFromConfig({ showWidget: false }), false);
+	});
+
+	it("reads showWidget string", () => {
+		assert.equal(widgetSettingFromConfig({ showWidget: "true" }), true);
+		assert.equal(widgetSettingFromConfig({ showWidget: "false" }), false);
+	});
+
+	it("falls back to widget field", () => {
+		assert.equal(widgetSettingFromConfig({ widget: true }), true);
+	});
+
+	it("prefers showWidget over widget", () => {
+		assert.equal(widgetSettingFromConfig({ showWidget: true, widget: false }), true);
+		assert.equal(widgetSettingFromConfig({ showWidget: false, widget: true }), false);
+	});
+});
+
+// ───────── parseOpenCodeGoUsageWindow ─────────
+
+describe("parseOpenCodeGoUsageWindow", () => {
+	it("parses rolling usage from HTML", () => {
+		const html = "<script>rollingUsage:\$R[42]={usagePercent:35.5,resetInSec:7200}</script>";
+		const result = parseOpenCodeGoUsageWindow(html, "rolling");
+		assert.ok(result !== undefined);
+		assert.equal(result!.usedPercent, 35.5);
+		assert.equal(result!.remainingPercent, 64.5);
+	});
+
+	it("parses weekly usage", () => {
+		const html = "<script>weeklyUsage:\$R[0]={usagePercent:80,resetInSec:604800}</script>";
+		const result = parseOpenCodeGoUsageWindow(html, "weekly");
+		assert.ok(result !== undefined);
+		assert.equal(result!.usedPercent, 80);
+	});
+
+	it("parses monthly usage", () => {
+		const html = "<script>monthlyUsage:\$R[1]={usagePercent:50,resetInSec:2592000}</script>";
+		const result = parseOpenCodeGoUsageWindow(html, "monthly");
+		assert.ok(result !== undefined);
+		assert.equal(result!.usedPercent, 50);
+	});
+
+	it("returns undefined for missing window", () => {
+		const html = "<script>otherData: true</script>";
+		assert.equal(parseOpenCodeGoUsageWindow(html, "rolling"), undefined);
+	});
+
+	it("returns undefined for missing usagePercent", () => {
+		const html = "<script>rollingUsage:\$R[0]={resetInSec:3600}</script>";
+		assert.equal(parseOpenCodeGoUsageWindow(html, "rolling"), undefined);
+	});
+
+	it("clamps usage percent", () => {
+		const html = "<script>rollingUsage:\$R[0]={usagePercent:150,resetInSec:3600}</script>";
+		const result = parseOpenCodeGoUsageWindow(html, "rolling");
+		assert.ok(result !== undefined);
+		assert.equal(result!.usedPercent, 100);
+	});
+
+	it("handles missing resetInSec with zero", () => {
+		const html = "<script>rollingUsage:\$R[0]={usagePercent:30}</script>";
+		const result = parseOpenCodeGoUsageWindow(html, "rolling");
+		assert.ok(result !== undefined);
+		assert.equal(result!.usedPercent, 30);
+		assert.equal(result!.resetAfterSeconds, 0);
+	});
+});
+
+// ───────── parseOpenCodeGoDashboardUsage ─────────
+
+describe("parseOpenCodeGoDashboardUsage", () => {
+	it("parses all three windows from full dashboard", () => {
+		const html = [
+			"<html><body><script>",
+			"var data = {};",
+			"rollingUsage:\$R[0]={usagePercent:20,resetInSec:3600}",
+			"weeklyUsage:\$R[0]={usagePercent:50,resetInSec:604800}",
+			"monthlyUsage:\$R[0]={usagePercent:75,resetInSec:2592000}",
+			"</script></body></html>",
+		].join("\n");
+		const result = parseOpenCodeGoDashboardUsage(html);
+		assert.equal((result as any).error, undefined);
+		assert.equal(result.rollingUsedPercent, 20);
+		assert.equal(result.weeklyUsedPercent, 50);
+		assert.equal(result.monthlyUsedPercent, 75);
+	});
+
+	it("parses partial data (only weekly and monthly)", () => {
+		const html = [
+			"<script>",
+			"weeklyUsage:\$R[0]={usagePercent:30,resetInSec:604800}",
+			"monthlyUsage:\$R[0]={usagePercent:60,resetInSec:2592000}",
+			"</script>",
+		].join("\n");
+		const result = parseOpenCodeGoDashboardUsage(html);
+		assert.equal(result.rollingUsedPercent, undefined);
+		assert.equal(result.weeklyUsedPercent, 30);
+		assert.equal(result.monthlyUsedPercent, 60);
+	});
+
+	it("returns error for unrecognized structure", () => {
+		const html = "<html><body>Not a dashboard page</body></html>";
+		const result = parseOpenCodeGoDashboardUsage(html);
+		assert.ok(result.error!.includes("not recognized"));
+		assert.equal((result as any).rollingUsedPercent, undefined);
 	});
 });

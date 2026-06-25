@@ -70,31 +70,7 @@ function getAuthApiKey(auth: AuthJson | undefined, provider: string): string | u
 
 // ───────── Dashboard Quota Parsing ─────────
 
-export function resolveModelEndpoint(baseUrl: string, api: GoProbeApi): string {
-	const normalized = baseUrl.replace(/\/+$/, "");
-	if (api === "anthropic-messages") {
-		if (normalized.endsWith("/messages")) return normalized;
-		if (normalized.endsWith("/v1")) return `${normalized}/messages`;
-		return `${normalized}/v1/messages`;
-	}
-	if (normalized.endsWith("/chat/completions")) return normalized;
-	if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
-	return `${normalized}/v1/chat/completions`;
-}
-
-export function isGlobalGoLimit(message: string): boolean {
-	if (/error from provider/i.test(message)) return false;
-	return /insufficient.*(credit|balance|fund)|balance.*insufficient|credits? exhausted|opencode.*(quota|limit)|go.*(quota|limit)|subscription.*(quota|limit)/i.test(message);
-}
-
-export function isPerModelUnavailable(status: number, message: string): boolean {
-	if (status === 400 || status === 404 || status === 422) return true;
-	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
-}
-
-// ───────── Internal helpers ─────────
-
-function parseOpenCodeGoUsageWindow(
+export function parseOpenCodeGoUsageWindow(
 	html: string,
 	key: "rolling" | "weekly" | "monthly",
 ): { usedPercent: number; remainingPercent: number; resetAfterSeconds: number; resetAt: number } | undefined {
@@ -116,7 +92,7 @@ function parseOpenCodeGoUsageWindow(
 	};
 }
 
-function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> {
+export function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult, "configured" | "source"> {
 	const rolling = parseOpenCodeGoUsageWindow(html, "rolling");
 	const weekly = parseOpenCodeGoUsageWindow(html, "weekly");
 	const monthly = parseOpenCodeGoUsageWindow(html, "monthly");
@@ -147,6 +123,29 @@ function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuotaResult
 		monthlyResetAt: monthly?.resetAt,
 	};
 }
+
+export function resolveModelEndpoint(baseUrl: string, api: GoProbeApi): string {
+	const normalized = baseUrl.replace(/\/+$/, "");
+	if (api === "anthropic-messages") {
+		if (normalized.endsWith("/messages")) return normalized;
+		if (normalized.endsWith("/v1")) return `${normalized}/messages`;
+		return `${normalized}/v1/messages`;
+	}
+	if (normalized.endsWith("/chat/completions")) return normalized;
+	if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
+	return `${normalized}/v1/chat/completions`;
+}
+
+export function isGlobalGoLimit(message: string): boolean {
+	if (/error from provider/i.test(message)) return false;
+	return /insufficient.*(credit|balance|fund)|balance.*insufficient|credits? exhausted|opencode.*(quota|limit)|go.*(quota|limit)|subscription.*(quota|limit)/i.test(message);
+}
+
+export function isPerModelUnavailable(status: number, message: string): boolean {
+	if (status === 400 || status === 404 || status === 422) return true;
+	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
+}
+
 
 async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<OpenCodeGoQuotaResult> {
 	const controller = new AbortController();
