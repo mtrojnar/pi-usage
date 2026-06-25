@@ -1394,51 +1394,64 @@ function footerResetDuration(resetAt?: number, resetAfterSeconds?: number): stri
 	return undefined;
 }
 
+function footerUsageColor(usedPercent: number): "dim" | "accent" | "warning" | "error" {
+	const rounded = Math.round(clampPercent(usedPercent));
+	if (rounded >= 100) return "error";
+	if (rounded >= 81) return "warning";
+	if (rounded >= 51) return "accent";
+	return "dim";
+}
+
 function footerWindowSummary(
 	usedPercent: number,
+	theme: any,
 	resetAt?: number,
 	resetAfterSeconds?: number,
 	suffix: string = "",
 ): string {
 	const reset = footerResetDuration(resetAt, resetAfterSeconds);
-	const used = `${usedPercent.toFixed(0)}%${suffix}`;
-	return reset ? `${used}/${reset}` : used;
+	const rounded = Math.round(clampPercent(usedPercent));
+	const used = `${rounded}%${suffix}`;
+	const text = reset ? `${used}/${reset}` : used;
+	return theme.fg(footerUsageColor(usedPercent), text);
 }
 
-function codexFooterSummary(codex: CodexUsage): string {
+function codexFooterSummary(codex: CodexUsage, theme: any): string {
 	return [
-		footerWindowSummary(codex.primaryUsedPercent, codex.primaryResetAt, codex.primaryResetAfterSeconds),
-		footerWindowSummary(codex.secondaryUsedPercent, codex.secondaryResetAt, codex.secondaryResetAfterSeconds),
-	].join(",");
+		footerWindowSummary(codex.primaryUsedPercent, theme, codex.primaryResetAt, codex.primaryResetAfterSeconds),
+		footerWindowSummary(codex.secondaryUsedPercent, theme, codex.secondaryResetAt, codex.secondaryResetAfterSeconds),
+	].join(theme.fg("dim", ","));
 }
 
-function goFooterSummary(go: OpenCodeGoUsage): string {
+function goFooterSummary(go: OpenCodeGoUsage, theme: any): string {
 	const quotaParts: string[] = [];
 	if (go.rollingUsedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(go.rollingUsedPercent, go.rollingResetAt, go.rollingResetAfterSeconds, "r"));
+		quotaParts.push(footerWindowSummary(go.rollingUsedPercent, theme, go.rollingResetAt, go.rollingResetAfterSeconds, "r"));
 	}
 	if (go.weeklyUsedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(go.weeklyUsedPercent, go.weeklyResetAt, go.weeklyResetAfterSeconds, "w"));
+		quotaParts.push(footerWindowSummary(go.weeklyUsedPercent, theme, go.weeklyResetAt, go.weeklyResetAfterSeconds, "w"));
 	}
 	if (go.monthlyUsedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(go.monthlyUsedPercent, go.monthlyResetAt, go.monthlyResetAfterSeconds, "m"));
+		quotaParts.push(footerWindowSummary(go.monthlyUsedPercent, theme, go.monthlyResetAt, go.monthlyResetAfterSeconds, "m"));
 	}
-	return quotaParts.length > 0 ? quotaParts.join(",") : statusIcon(go.status);
+	return quotaParts.length > 0 ? quotaParts.join(theme.fg("dim", ",")) : theme.fg("dim", statusIcon(go.status));
 }
 
 function updateFooterStatus(ctx: any, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
 	if (!ctx.hasUI) return;
 
+	const theme = ctx.ui.theme;
+	const dim = (text: string) => theme.fg("dim", text);
 	const parts: string[] = [];
 	if (codexUsageHasData(codex)) {
 		const limited = codex.activeLimit === "rate_limited" ? " limited" : "";
-		parts.push(`Codex${limited}:${codexFooterSummary(codex)}`);
+		parts.push(`${dim(`Codex${limited}:`)}${codexFooterSummary(codex, theme)}`);
 	}
 	if (go) {
-		parts.push(`Go:${goFooterSummary(go)}`);
+		parts.push(`${dim("Go:")}${goFooterSummary(go, theme)}`);
 	}
 	if (parts.length > 0) {
-		ctx.ui.setStatus("pi-usage", `⚡ ${parts.join(" │ ")}`);
+		ctx.ui.setStatus("pi-usage", `${dim("⚡ ")}${parts.join(dim(" │ "))}`);
 	} else {
 		ctx.ui.setStatus("pi-usage", undefined);
 	}

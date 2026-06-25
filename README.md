@@ -22,6 +22,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 
 - `PI_CODING_AGENT_DIR` support instead of assuming `~/.pi/agent`.
 - `limited` status in the footer and startup notification when Codex reports `rate_limited`.
+- Color-coded footer usage/reset chunks for Codex and OpenCode Go, with labels dimmed.
 - Configurable persistent widget display; default startup report includes enable instructions.
 - Safer config/model handling for falsy environment values and missing OpenCode Go model cost data.
 - Cancellation of unused response bodies to avoid stalled probe connections.
@@ -44,7 +45,7 @@ When pi starts up, **pi-usage** automatically:
    - Error details if credits are exhausted
    - How many documented Go models were checked before a result was found
 
-By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. The footer status line stays updated. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
+By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
 
 ## Installation
 
@@ -144,7 +145,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 Usage limits are checked automatically on startup and every 30 minutes.
 
-By default, startup shows a one-time **Usage Limits** report and footer status. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
+By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
 ```json
 {
@@ -186,7 +187,13 @@ Codex (plus) [premium]
   working: glm-5.1
 ```
 
-When limits are running high, the progress bars and percentages turn **yellow** (>70%) or **red** (>90%).
+Footer status is compact, for example:
+
+```
+⚡ Codex:17%/4.9h,42%/3.8d │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d
+```
+
+OpenCode Go footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
 
 ## How It Works
 
