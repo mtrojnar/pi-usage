@@ -215,6 +215,17 @@ function configPathCandidates(fileName: string): string[] {
 	return dedupe(candidates);
 }
 
+function validatePrivateConfigFile(configPath: string): string | undefined {
+	if (process.platform === "win32") return undefined;
+
+	const stats = fs.statSync(configPath);
+	if (!stats.isFile()) return `${configPath} must be a regular file`;
+	if ((stats.mode & 0o077) !== 0) {
+		return `${configPath} contains an auth cookie and must not be accessible by group or others; set mode 0600`;
+	}
+	return undefined;
+}
+
 function getOpenCodeGoQuotaConfig(): OpenCodeGoQuotaConfigState {
 	const workspaceId = process.env.OPENCODE_GO_WORKSPACE_ID?.trim();
 	const authCookie = process.env.OPENCODE_GO_AUTH_COOKIE?.trim();
@@ -230,6 +241,9 @@ function getOpenCodeGoQuotaConfig(): OpenCodeGoQuotaConfigState {
 	for (const configPath of configPathCandidates(OPENCODE_GO_QUOTA_CONFIG_FILE)) {
 		if (!fs.existsSync(configPath)) continue;
 		try {
+			const permissionError = validatePrivateConfigFile(configPath);
+			if (permissionError) return { error: permissionError };
+
 			const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
 				workspaceId?: unknown;
 				authCookie?: unknown;

@@ -92,6 +92,12 @@ You can also store the same values in an OpenCode quota config file:
 }
 ```
 
+The config file contains a browser auth cookie. On POSIX systems, pi-usage rejects files accessible by group or others:
+
+```bash
+chmod 600 ~/.config/opencode/opencode-quota/opencode-go.json
+```
+
 Config file locations checked:
 
 - `OPENCODE_GO_QUOTA_CONFIG`, if set
@@ -106,7 +112,7 @@ To find the values:
 - `workspaceId` is the id in `https://opencode.ai/workspace/<workspaceId>/go`
 - `authCookie` is the value of the `auth` cookie for `opencode.ai` in your browser devtools
 
-The cookie is sensitive. Prefer environment variables or the local config file; do not commit it.
+The cookie is sensitive. Prefer environment variables or a `0600` local config file; do not commit it.
 
 ## Usage
 
