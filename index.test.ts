@@ -331,9 +331,10 @@ describe("footerUsageColor", () => {
 
 describe("footerResetDuration", () => {
 	it("returns formatted reset time from resetAt", () => {
-		const future = Math.round(Date.now() / 1000) + 3600;
+		// Use a timestamp far enough ahead that sub-second drift won't matter
+		const future = Math.floor(Date.now() / 1000) + 9000;
 		const result = footerResetDuration(future, undefined);
-		assert.match(result ?? "", /^[0-9.]+h$/);
+		assert.equal(result, "2.5h");
 	});
 
 	it("returns formatted duration from resetAfterSeconds", () => {
@@ -346,9 +347,9 @@ describe("footerResetDuration", () => {
 	});
 
 	it("prefers resetAt over resetAfterSeconds", () => {
-		const future = Math.round(Date.now() / 1000) + 7200;
+		const future = Math.floor(Date.now() / 1000) + 12600;
 		const result = footerResetDuration(future, 60);
-		assert.match(result ?? "", /^[0-9.]+h$/);
+		assert.equal(result, "3.5h");
 	});
 
 	it("returns undefined for resetAt=0", () => {
@@ -561,9 +562,9 @@ describe("formatResetTime", () => {
 	});
 
 	it("returns duration for future timestamp", () => {
-		const future = Math.round(Date.now() / 1000) + 3600;
+		const future = Math.floor(Date.now() / 1000) + 9000;
 		const result = formatResetTime(future);
-		assert.match(result, /^[0-9.]+h$/);
+		assert.equal(result, "2.5h");
 	});
 });
 

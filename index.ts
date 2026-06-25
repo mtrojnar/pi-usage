@@ -468,22 +468,25 @@ async function readResponseText(response: Response): Promise<string> {
 
 	try {
 		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			chunks.push(value);
-			totalBytes += value.byteLength;
-			if (totalBytes > MAX_BODY_BYTES) {
-				reader.cancel().catch(() => {});
-				throw new Error(`Response body exceeded ${MAX_BODY_BYTES} byte limit`);
+			try {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (!value) continue;
+				chunks.push(value);
+				totalBytes += value.byteLength;
+				if (totalBytes > MAX_BODY_BYTES) {
+					reader.cancel().catch(() => {});
+					throw new Error(`Response body exceeded ${MAX_BODY_BYTES} byte limit`);
+				}
+			} catch (readErr: unknown) {
+				if (timedOut) throw new Error("Response body read timed out");
+				throw readErr;
 			}
 		}
 	} finally {
 		clearTimeout(timeout);
 		try { reader.releaseLock(); } catch { /* ignore */ }
 	}
-
-	if (timedOut) throw new Error("Response body read timed out");
 
 	const bytes = new Uint8Array(totalBytes);
 	let offset = 0;
