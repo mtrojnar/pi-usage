@@ -1448,67 +1448,69 @@ export default function (pi: ExtensionAPI) {
 		isLoading = true;
 		currentCtx = ctx;
 
-		const showWidget = isUsageWidgetEnabled(ctx);
-		const showStartupReport = !showWidget && trigger !== "auto";
+		try {
+			const showWidget = isUsageWidgetEnabled(ctx);
+			const showStartupReport = !showWidget && trigger !== "auto";
 
-		// Show loading state
-		if (ctx.hasUI) {
-			if (showWidget) {
-				ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-					buildUsageWidget(codexUsage, goUsage, theme, true),
-				);
-			} else {
-				ctx.ui.setWidget(WIDGET_ID, undefined);
-				if (showStartupReport) ctx.ui.notify("⚡ Checking usage limits...", "info");
-			}
-		}
-
-		const checks: Promise<void>[] = [];
-
-		// Check Codex
-		const codexAuth = await getCodexToken();
-		if (codexAuth) {
-			checks.push(
-				checkCodexUsage(codexAuth.token, codexAuth.accountId).then((result) => {
-					codexUsage = result;
-				}),
-			);
-		}
-
-		// Check OpenCode Go
-		const goKey = getOpenCodeApiKey();
-		const goQuotaState = getOpenCodeGoQuotaConfig();
-		if (goKey || goQuotaState.config || goQuotaState.error) {
-			checks.push(
-				checkOpenCodeGoUsage(goKey, goQuotaState).then((result) => {
-					goUsage = result;
-				}),
-			);
-		} else {
-			goUsage = undefined;
-		}
-
-		// Run checks in parallel
-		await Promise.allSettled(checks);
-
-		isLoading = false;
-
-		// Update display with results
-		if (ctx.hasUI) {
-			const showWidgetAfterRefresh = isUsageWidgetEnabled(ctx);
-			if (showWidgetAfterRefresh) {
-				ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-					buildUsageWidget(codexUsage, goUsage, theme, false),
-				);
-			} else {
-				ctx.ui.setWidget(WIDGET_ID, undefined);
-				if (trigger !== "auto") {
-					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
+			// Show loading state
+			if (ctx.hasUI) {
+				if (showWidget) {
+					ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
+						buildUsageWidget(codexUsage, goUsage, theme, true),
+					);
+				} else {
+					ctx.ui.setWidget(WIDGET_ID, undefined);
+					if (showStartupReport) ctx.ui.notify("⚡ Checking usage limits...", "info");
 				}
 			}
 
-			// Footer status
-			updateFooterStatus(ctx, codexUsage, goUsage);
+			const checks: Promise<void>[] = [];
+
+			// Check Codex
+			const codexAuth = await getCodexToken();
+			if (codexAuth) {
+				checks.push(
+					checkCodexUsage(codexAuth.token, codexAuth.accountId).then((result) => {
+						codexUsage = result;
+					}),
+				);
+			}
+
+			// Check OpenCode Go
+			const goKey = getOpenCodeApiKey();
+			const goQuotaState = getOpenCodeGoQuotaConfig();
+			if (goKey || goQuotaState.config || goQuotaState.error) {
+				checks.push(
+					checkOpenCodeGoUsage(goKey, goQuotaState).then((result) => {
+						goUsage = result;
+					}),
+				);
+			} else {
+				goUsage = undefined;
+			}
+
+			// Run checks in parallel
+			await Promise.allSettled(checks);
+
+			// Update display with results
+			if (ctx.hasUI) {
+				const showWidgetAfterRefresh = isUsageWidgetEnabled(ctx);
+				if (showWidgetAfterRefresh) {
+					ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
+						buildUsageWidget(codexUsage, goUsage, theme, false),
+					);
+				} else {
+					ctx.ui.setWidget(WIDGET_ID, undefined);
+					if (trigger !== "auto") {
+						ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
+					}
+				}
+
+				// Footer status
+				updateFooterStatus(ctx, codexUsage, goUsage);
+			}
+		} finally {
+			isLoading = false;
 		}
 	}
 
