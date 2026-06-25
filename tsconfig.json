@@ -6,10 +6,11 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "src/**/*.ts"]
 }

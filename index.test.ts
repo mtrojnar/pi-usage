@@ -7,27 +7,35 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	clampPercent,
-	dedupe,
-	footerResetDuration,
-	footerUsageColor,
 	formatDuration,
 	formatResetTime,
-	isGlobalGoLimit,
-	isPerModelUnavailable,
-	parseBoolValue,
-	parseEnvInt,
 	parseHeaderBool,
 	parseHeaderNumber,
 	progressBar,
-	resolveConfigValue,
-	resolveModelEndpoint,
 	truncate,
 	usageColor,
+} from "./src/format.ts";
+import {
+	dedupe,
+	parseBoolValue,
+	parseEnvInt,
+	resolveConfigValue,
+} from "./src/config.ts";
+import {
 	windowMinutes,
 	windowResetAfterSeconds,
 	windowResetAt,
 	windowUsedPercent,
-} from "./index.ts";
+} from "./src/codex.ts";
+import {
+	footerResetDuration,
+	footerUsageColor,
+} from "./src/render.ts";
+import {
+	isGlobalGoLimit,
+	isPerModelUnavailable,
+	resolveModelEndpoint,
+} from "./src/opencode-go.ts";
 
 // ───────── parseEnvInt ─────────
 
