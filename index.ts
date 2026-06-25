@@ -890,7 +890,8 @@ function getOpenCodeGoCheckModels(): GoCheckModel[] {
 	for (const model of getModels("opencode-go")) {
 		if (modelsById.has(model.id)) continue;
 		const api: GoProbeApi = (model.api as string) === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
-		const rawRank = model.cost.input + model.cost.output + model.cost.cacheRead + model.cost.cacheWrite;
+		const cost = model.cost ?? {};
+		const rawRank = (cost.input ?? 0) + (cost.output ?? 0) + (cost.cacheRead ?? 0) + (cost.cacheWrite ?? 0);
 		const costRank = Number.isFinite(rawRank) ? rawRank : 9999;
 		modelsById.set(model.id, {
 			id: model.id,
