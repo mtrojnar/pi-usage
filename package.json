@@ -56,9 +56,9 @@
     "test": "npx tsx --test index.test.ts"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": ">=0.73.1 <1",
-    "@mariozechner/pi-coding-agent": ">=0.73.1 <1",
-    "@mariozechner/pi-tui": ">=0.73.1 <1",
+    "@earendil-works/pi-ai": ">=0.80.2 <1",
+    "@earendil-works/pi-coding-agent": ">=0.80.2 <1",
+    "@earendil-works/pi-tui": ">=0.80.2 <1",
     "@types/node": "^24.3.0",
     "typescript": "^5.7.3"
   }

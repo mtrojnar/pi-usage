@@ -26,7 +26,7 @@ export async function getCodexToken(): Promise<{ token: string; accountId: strin
 		if (!fs.existsSync(authPath)) return undefined;
 
 		// Let pi own OAuth refresh, locking, and auth.json permissions.
-		const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 		const authStorage = AuthStorage.create(authPath);
 		const token = await authStorage.getApiKey(OPENAI_CODEX_PROVIDER, { includeFallback: false });
 		if (!token) return undefined;

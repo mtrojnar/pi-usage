@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import type { ThemeColor } from "@mariozechner/pi-coding-agent";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type {
 	AuthApiKeyCredential,
 	AuthJson,
@@ -220,7 +220,7 @@ async function getOpenCodeGoCheckModels(): Promise<GoCheckModel[]> {
 		modelsById.set(model.id, model);
 	}
 	try {
-		const { getModels } = await import("@mariozechner/pi-ai");
+		const { getModels } = await import("@earendil-works/pi-ai/compat");
 		for (const model of getModels("opencode-go")) {
 			if (modelsById.has(model.id)) continue;
 			const api: GoProbeApi = (model.api as string) === "anthropic-messages" ? "anthropic-messages" : "openai-completions";

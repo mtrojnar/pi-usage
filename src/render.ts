@@ -1,6 +1,6 @@
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import type { ThemeColor } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import type { CodexUsage, GoModelStatus, OpenCodeGoUsage, UsageContext } from "./types.ts";
 import { GO_COLOR_MAP, GO_STATUS_TEXT } from "./opencode-go.ts";
 import { USAGE_CONFIG_FILE, USAGE_WIDGET_FLAG, USAGE_WIDGET_HELP } from "./config.ts";
