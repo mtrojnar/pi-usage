@@ -16,7 +16,7 @@ import {
 	extractAccountId,
 } from "./config.ts";
 import { clampPercent, parseHeaderBool, parseHeaderNumber, truncate } from "./format.ts";
-import { cancelResponseBody, readResponseJson, readResponseText } from "./http.ts";
+import { cancelResponseBody, createTimeoutSignal, readResponseJson, readResponseText } from "./http.ts";
 
 // ───────── Codex Auth ─────────
 
@@ -25,16 +25,18 @@ export async function getCodexToken(): Promise<{ token: string; accountId: strin
 		const authPath = authJsonPath();
 		if (!fs.existsSync(authPath)) return undefined;
 
-		// Let pi own OAuth refresh, locking, and auth.json permissions.
+		// Use pi's auth storage format, but do not trigger OAuth refresh from this
+		// background check. Refresh may perform unbounded provider I/O; pi will
+		// refresh the token during normal model use.
 		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 		const authStorage = AuthStorage.create(authPath);
-		const token = await authStorage.getApiKey(OPENAI_CODEX_PROVIDER, { includeFallback: false });
-		if (!token) return undefined;
-
 		const codex = authStorage.get(OPENAI_CODEX_PROVIDER) as CodexOAuthCredential | undefined;
-		const accountId = codex?.accountId ?? extractAccountId(token);
+		if (codex?.type !== "oauth" || !codex.access) return undefined;
+		if (typeof codex.expires === "number" && Date.now() >= codex.expires) return undefined;
+
+		const accountId = codex.accountId ?? extractAccountId(codex.access);
 		if (!accountId) return undefined;
-		return { token, accountId };
+		return { token: codex.access, accountId };
 	} catch {
 		return undefined;
 	}
@@ -65,10 +67,9 @@ export function windowResetAt(window: OpenAIUsageWindow | null | undefined): num
 
 // ───────── Codex Usage Check ─────────
 
-async function checkCodexUsageFromUsageApi(token: string, accountId: string): Promise<CodexUsageApiResult> {
+async function checkCodexUsageFromUsageApi(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsageApiResult> {
 	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+		const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 
 		let response: Response;
 		try {
@@ -78,22 +79,22 @@ async function checkCodexUsageFromUsageApi(token: string, accountId: string): Pr
 					"ChatGPT-Account-Id": accountId,
 					"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
 				},
-				signal: controller.signal,
+				signal: timeoutSignal.signal,
 			});
 		} finally {
-			clearTimeout(timeout);
+			timeoutSignal.cleanup();
 		}
 
 		if (!response.ok) {
 			let detail = `HTTP ${response.status}`;
 			try {
-				const body = await readResponseText(response);
+				const body = await readResponseText(response, signal);
 				detail = truncate(body, 160) || detail;
 			} catch { /* ignore */ }
 			return { success: false, error: `OpenAI usage API: ${detail}` };
 		}
 
-		const data = await readResponseJson<OpenAIUsageResponse>(response);
+		const data = await readResponseJson<OpenAIUsageResponse>(response, signal);
 		const primary = data.rate_limit?.primary_window;
 		if (!primary) {
 			return { success: false, error: "OpenAI usage API: no primary quota window" };
@@ -149,35 +150,37 @@ const PROBE_ERROR_BASE: Omit<CodexUsage, "error"> = {
 	source: "probe",
 };
 
-async function checkCodexUsageWithProbe(token: string, accountId: string): Promise<CodexUsage> {
+async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsage> {
 	const baseUrl = "https://chatgpt.com/backend-api/codex/responses";
 
 	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+		const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 
-		const response = await fetch(baseUrl, {
-			method: "POST",
-			headers: {
-				"Authorization": `Bearer ${token}`,
-				"chatgpt-account-id": accountId,
-				"Content-Type": "application/json",
-				"OpenAI-Beta": "responses=experimental",
-				"accept": "text/event-stream",
-				"originator": "pi-usage",
-				"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
-			},
-			body: JSON.stringify({
-				model: CODEX_PROBE_MODEL,
-				instructions: "Reply with just: ok",
-				input: [{ type: "message", role: "user", content: "hi" }],
-				store: false,
-				stream: true,
-			}),
-			signal: controller.signal,
-		});
-
-		clearTimeout(timeout);
+		let response: Response;
+		try {
+			response = await fetch(baseUrl, {
+				method: "POST",
+				headers: {
+					"Authorization": `Bearer ${token}`,
+					"chatgpt-account-id": accountId,
+					"Content-Type": "application/json",
+					"OpenAI-Beta": "responses=experimental",
+					"accept": "text/event-stream",
+					"originator": "pi-usage",
+					"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
+				},
+				body: JSON.stringify({
+					model: CODEX_PROBE_MODEL,
+					instructions: "Reply with just: ok",
+					input: [{ type: "message", role: "user", content: "hi" }],
+					store: false,
+					stream: true,
+				}),
+				signal: timeoutSignal.signal,
+			});
+		} finally {
+			timeoutSignal.cleanup();
+		}
 
 		const getHeader = (name: string): string | undefined =>
 			response.headers.get(name) ?? undefined;
@@ -208,7 +211,7 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 		if (response.status === 429) {
 			let resetAt = parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0);
 			try {
-				const body = await readResponseText(response);
+				const body = await readResponseText(response, signal);
 				const parsed = JSON.parse(body);
 				resetAt = parsed?.error?.resets_at ?? resetAt;
 			} catch { /* ignore */ }
@@ -239,7 +242,7 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 		// Other errors
 		let errorMsg = `HTTP ${response.status}`;
 		try {
-			const body = await readResponseText(response);
+			const body = await readResponseText(response, signal);
 			const parsed = JSON.parse(body);
 			errorMsg = parsed?.error?.message ?? parsed?.detail ?? errorMsg;
 		} catch { /* ignore */ }
@@ -253,13 +256,13 @@ async function checkCodexUsageWithProbe(token: string, accountId: string): Promi
 	}
 }
 
-export async function checkCodexUsage(token: string, accountId: string): Promise<CodexUsage> {
-	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId);
-	if (usageApiResult.success) {
-		return usageApiResult.usage;
+export async function checkCodexUsage(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsage> {
+	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId, signal);
+	if (usageApiResult.success || signal?.aborted) {
+		return usageApiResult.success ? usageApiResult.usage : { ...PROBE_ERROR_BASE, error: usageApiResult.error };
 	}
 
-	const probeResult = await checkCodexUsageWithProbe(token, accountId);
+	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal);
 	if (probeResult.error && probeResult.activeLimit === "error") {
 		probeResult.error = `${usageApiResult.error}; fallback probe: ${probeResult.error}`;
 	}

@@ -18,7 +18,7 @@ import {
 	resolveConfigValue,
 } from "./config.ts";
 import { clampPercent, truncate } from "./format.ts";
-import { cancelResponseBody, readResponseText } from "./http.ts";
+import { cancelResponseBody, createTimeoutSignal, readResponseText } from "./http.ts";
 
 // ───────── Constants ─────────
 
@@ -142,9 +142,8 @@ export function isPerModelUnavailable(status: number, message: string): boolean 
 }
 
 
-async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<OpenCodeGoQuotaResult> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig, signal?: AbortSignal): Promise<OpenCodeGoQuotaResult> {
+	const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 
 	try {
 		const response = await fetch(
@@ -155,7 +154,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 					"Cookie": `auth=${config.authCookie}`,
 					"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
 				},
-				signal: controller.signal,
+				signal: timeoutSignal.signal,
 			},
 		);
 
@@ -168,7 +167,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 			};
 		}
 
-		const html = await readResponseText(response);
+		const html = await readResponseText(response, signal);
 		const parsed = parseOpenCodeGoDashboardUsage(html);
 		if (parsed.error) {
 			return {
@@ -190,23 +189,23 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig): Promise<Open
 			error: e instanceof Error ? e.message : String(e),
 		};
 	} finally {
-		clearTimeout(timeout);
+		timeoutSignal.cleanup();
 	}
 }
 
-async function checkOpenCodeGoQuota(configState: OpenCodeGoQuotaConfigState): Promise<OpenCodeGoQuotaResult> {
+async function checkOpenCodeGoQuota(configState: OpenCodeGoQuotaConfigState, signal?: AbortSignal): Promise<OpenCodeGoQuotaResult> {
 	if (configState.error) {
 		return { configured: false, error: configState.error };
 	}
 	if (!configState.config) {
 		return { configured: false };
 	}
-	return fetchOpenCodeGoQuota(configState.config);
+	return fetchOpenCodeGoQuota(configState.config, signal);
 }
 
-async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+async function readErrorMessage(response: Response, fallback: string, signal?: AbortSignal): Promise<string> {
 	try {
-		const body = await readResponseText(response);
+		const body = await readResponseText(response, signal);
 		const parsed = JSON.parse(body);
 		return parsed?.error?.message ?? parsed?.message ?? parsed?.detail ?? fallback;
 	} catch {
@@ -275,7 +274,7 @@ async function probeOpenCodeGoModel(apiKey: string, model: GoCheckModel, signal:
 	});
 }
 
-async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCodeGoUsage> {
+async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortSignal): Promise<OpenCodeGoUsage> {
 	if (!apiKey) {
 		return {
 			available: false,
@@ -290,15 +289,15 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 
 	try {
 		for (const model of models) {
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+			if (signal?.aborted) throw new Error("OpenCode Go check aborted");
+			const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 			checkedModels += 1;
 
 			let response: Response;
 			try {
-				response = await probeOpenCodeGoModel(apiKey, model, controller.signal);
+				response = await probeOpenCodeGoModel(apiKey, model, timeoutSignal.signal);
 			} finally {
-				clearTimeout(timeout);
+				timeoutSignal.cleanup();
 			}
 
 			if (response.ok) {
@@ -314,7 +313,7 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 			}
 
 			if (response.status === 429) {
-				const errorMsg = await readErrorMessage(response, "Rate limited");
+				const errorMsg = await readErrorMessage(response, "Rate limited", signal);
 				lastRateLimit = { model: model.id, message: errorMsg };
 
 				if (isGlobalGoLimit(errorMsg)) {
@@ -331,7 +330,7 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 			}
 
 			if (response.status === 401 || response.status === 403) {
-				const errorMsg = await readErrorMessage(response, "Authentication error");
+				const errorMsg = await readErrorMessage(response, "Authentication error", signal);
 				const status: GoModelStatus = /credit|balance|quota|insufficient/i.test(errorMsg)
 					? "credits_error"
 					: "error";
@@ -344,7 +343,7 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 				};
 			}
 
-			const errorMsg = await readErrorMessage(response, `HTTP ${response.status}`);
+			const errorMsg = await readErrorMessage(response, `HTTP ${response.status}`, signal);
 			if (isPerModelUnavailable(response.status, errorMsg)) {
 				lastUnavailable = { model: model.id, message: errorMsg };
 				continue;
@@ -394,8 +393,9 @@ async function checkOpenCodeGoModels(apiKey: string | undefined): Promise<OpenCo
 export async function checkOpenCodeGoUsage(
 	apiKey: string | undefined,
 	configState: OpenCodeGoQuotaConfigState,
+	signal?: AbortSignal,
 ): Promise<OpenCodeGoUsage> {
-	const quotaCheck = await checkOpenCodeGoQuota(configState);
+	const quotaCheck = await checkOpenCodeGoQuota(configState, signal);
 	if (
 		quotaCheck.rollingUsedPercent !== undefined ||
 		quotaCheck.weeklyUsedPercent !== undefined ||
@@ -428,7 +428,15 @@ export async function checkOpenCodeGoUsage(
 		};
 	}
 
-	const modelCheck = await checkOpenCodeGoModels(apiKey);
+	if (signal?.aborted) {
+		return {
+			available: false,
+			status: "error",
+			error: "OpenCode Go check aborted",
+		};
+	}
+
+	const modelCheck = await checkOpenCodeGoModels(apiKey, signal);
 
 	return {
 		...modelCheck,
