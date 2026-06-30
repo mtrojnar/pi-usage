@@ -26,6 +26,7 @@ export const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "openco
 export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
 export const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
+export const UI_REFRESH_SECONDS = parseEnvInt("PI_USAGE_UI_REFRESH_SEC", 60);
 
 // ───────── Env / Config Helpers ─────────
 

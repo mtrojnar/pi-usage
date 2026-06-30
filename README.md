@@ -143,7 +143,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes.
+Usage limits are checked automatically on startup and every 30 minutes. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
 By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
@@ -241,7 +241,8 @@ Widget display uses pi-style extension config files:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PI_USAGE_REFRESH_MIN` | `30` | Auto-refresh interval in minutes |
+| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes |
+| `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |

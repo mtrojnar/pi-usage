@@ -17,6 +17,7 @@ import type { CodexUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "
 import {
 	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
+	UI_REFRESH_SECONDS,
 	NO_USAGE_WIDGET_FLAG,
 	USAGE_WIDGET_FLAG,
 	WIDGET_ID,
@@ -48,7 +49,9 @@ export default function (pi: ExtensionAPI) {
 	let codexUsage: CodexUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
 	let isLoading = false;
+	let widgetLoading = false;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
+	let displayTimer: ReturnType<typeof setInterval> | undefined;
 	let startupDelayTimer: ReturnType<typeof setTimeout> | undefined;
 	let refreshController: AbortController | undefined;
 	let currentCtx: UsageContext | undefined;
@@ -64,6 +67,41 @@ export default function (pi: ExtensionAPI) {
 		if (pi.getFlag(NO_USAGE_WIDGET_FLAG) === true) return false;
 		if (pi.getFlag(USAGE_WIDGET_FLAG) === true) return true;
 		return readUsageWidgetSetting(ctx) ?? false;
+	}
+
+	function renderCachedUsage(ctx: UsageContext, loading = false): void {
+		if (!ctx.hasUI) return;
+		if (isUsageWidgetEnabled(ctx)) {
+			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
+				buildUsageWidget(codexUsage, goUsage, theme, loading),
+			);
+		} else {
+			ctx.ui.setWidget(WIDGET_ID, undefined);
+		}
+		updateFooterStatus(ctx, codexUsage, goUsage);
+	}
+
+	function resetAtFromAfter(resetAt: number | undefined, resetAfterSeconds: number | undefined, nowSec: number): number | undefined {
+		if (resetAt !== undefined && resetAt > 0) return resetAt;
+		return resetAfterSeconds !== undefined && resetAfterSeconds > 0
+			? nowSec + Math.round(resetAfterSeconds)
+			: resetAt;
+	}
+
+	function normalizeCodexResetTimes(usage: CodexUsage): CodexUsage {
+		const nowSec = Math.round(Date.now() / 1000);
+		usage.primaryResetAt = resetAtFromAfter(usage.primaryResetAt, usage.primaryResetAfterSeconds, nowSec) ?? 0;
+		usage.secondaryResetAt = resetAtFromAfter(usage.secondaryResetAt, usage.secondaryResetAfterSeconds, nowSec) ?? 0;
+		usage.codeReviewResetAt = resetAtFromAfter(usage.codeReviewResetAt, usage.codeReviewResetAfterSeconds, nowSec);
+		return usage;
+	}
+
+	function normalizeGoResetTimes(usage: OpenCodeGoUsage): OpenCodeGoUsage {
+		const nowSec = Math.round(Date.now() / 1000);
+		usage.rollingResetAt = resetAtFromAfter(usage.rollingResetAt, usage.rollingResetAfterSeconds, nowSec);
+		usage.weeklyResetAt = resetAtFromAfter(usage.weeklyResetAt, usage.weeklyResetAfterSeconds, nowSec);
+		usage.monthlyResetAt = resetAtFromAfter(usage.monthlyResetAt, usage.monthlyResetAfterSeconds, nowSec);
+		return usage;
 	}
 
 	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
@@ -87,17 +125,12 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const showWidget = isUsageWidgetEnabled(ctx);
 			const showStartupReport = !showWidget && trigger !== "auto";
+			widgetLoading = showWidget && trigger !== "auto";
 
-			// Show loading state
+			// Show loading state for user-triggered checks; keep cached values during auto refresh.
 			if (ctx.hasUI) {
-				if (showWidget) {
-					ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-						buildUsageWidget(codexUsage, goUsage, theme, true),
-					);
-				} else {
-					ctx.ui.setWidget(WIDGET_ID, undefined);
-					if (showStartupReport) ctx.ui.notify("⚡ Checking usage limits...", "info");
-				}
+				renderCachedUsage(ctx, widgetLoading);
+				if (showStartupReport) ctx.ui.notify("⚡ Checking usage limits...", "info");
 			}
 
 			const checks: Promise<void>[] = [];
@@ -108,7 +141,7 @@ export default function (pi: ExtensionAPI) {
 			if (codexAuth) {
 				checks.push(
 					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal).then((result) => {
-						if (!signal.aborted && generation === sessionGeneration) codexUsage = result;
+						if (!signal.aborted && generation === sessionGeneration) codexUsage = normalizeCodexResetTimes(result);
 					}),
 				);
 			}
@@ -119,7 +152,7 @@ export default function (pi: ExtensionAPI) {
 			if (goKey || goQuotaState.config || goQuotaState.error) {
 				checks.push(
 					checkOpenCodeGoUsage(goKey, goQuotaState, signal).then((result) => {
-						if (!signal.aborted && generation === sessionGeneration) goUsage = result;
+						if (!signal.aborted && generation === sessionGeneration) goUsage = normalizeGoResetTimes(result);
 					}),
 				);
 			} else {
@@ -130,32 +163,26 @@ export default function (pi: ExtensionAPI) {
 			await Promise.allSettled(checks);
 
 			if (signal.aborted || generation !== sessionGeneration || currentCtx !== ctx) {
-				if (refreshTimedOut && generation === sessionGeneration && currentCtx === ctx && trigger !== "auto") {
-					ctx.ui.notify("Usage check timed out", "warning");
+				if (generation === sessionGeneration && currentCtx === ctx) {
+					widgetLoading = false;
+					renderCachedUsage(ctx, false);
+					if (refreshTimedOut && trigger !== "auto") ctx.ui.notify("Usage check timed out", "warning");
 				}
 				return;
 			}
 
 			// Update display with results
 			if (ctx.hasUI) {
-				const showWidgetAfterRefresh = isUsageWidgetEnabled(ctx);
-				if (showWidgetAfterRefresh) {
-					ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-						buildUsageWidget(codexUsage, goUsage, theme, false),
-					);
-				} else {
-					ctx.ui.setWidget(WIDGET_ID, undefined);
-					if (trigger !== "auto") {
-						ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
-					}
+				widgetLoading = false;
+				renderCachedUsage(ctx, false);
+				if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
+					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
 				}
-
-				// Footer status
-				updateFooterStatus(ctx, codexUsage, goUsage);
 			}
 		} finally {
 			clearTimeout(refreshTimeout);
 			if (refreshController === controller) refreshController = undefined;
+			widgetLoading = false;
 			isLoading = false;
 		}
 	}
@@ -164,6 +191,13 @@ export default function (pi: ExtensionAPI) {
 		if (refreshTimer) {
 			clearInterval(refreshTimer);
 			refreshTimer = undefined;
+		}
+	}
+
+	function clearDisplayRefreshTimer(): void {
+		if (displayTimer) {
+			clearInterval(displayTimer);
+			displayTimer = undefined;
 		}
 	}
 
@@ -184,6 +218,21 @@ export default function (pi: ExtensionAPI) {
 		unrefTimer(refreshTimer);
 	}
 
+	function startDisplayRefreshTimer(ctx: UsageContext, generation: number = sessionGeneration): void {
+		if (!ctx.hasUI) return;
+		clearDisplayRefreshTimer();
+		displayTimer = setInterval(() => {
+			if (generation !== sessionGeneration || currentCtx !== ctx) return;
+			renderCachedUsage(ctx, widgetLoading);
+		}, UI_REFRESH_SECONDS * 1000);
+		unrefTimer(displayTimer);
+	}
+
+	function startTimers(ctx: UsageContext, generation: number = sessionGeneration): void {
+		startAutoRefreshTimer(ctx, generation);
+		startDisplayRefreshTimer(ctx, generation);
+	}
+
 	// ── Startup check + auto-refresh ──
 	pi.on("session_start", async (event, ctx) => {
 		const generation = ++sessionGeneration;
@@ -194,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 			// Block /usage during startup delay to avoid duplicate checks
 			isLoading = true;
 			clearStartupDelayTimer();
-			// Small delay to let TUI settle, then refresh; start autorefresh timer only after first check
+			// Small delay to let TUI settle, then refresh; start timers only after first check
 			startupDelayTimer = setTimeout(() => {
 				startupDelayTimer = undefined;
 				if (generation !== sessionGeneration || currentCtx !== ctx) return;
@@ -202,12 +251,12 @@ export default function (pi: ExtensionAPI) {
 				refreshUsage(ctx, "startup")
 					.catch(() => {})
 					.then(() => {
-						if (generation === sessionGeneration && currentCtx === ctx) startAutoRefreshTimer(ctx, generation);
+						if (generation === sessionGeneration && currentCtx === ctx) startTimers(ctx, generation);
 					});
 			}, 500);
 			unrefTimer(startupDelayTimer);
 		} else {
-			startAutoRefreshTimer(ctx, generation);
+			startTimers(ctx, generation);
 		}
 	});
 
@@ -215,9 +264,11 @@ export default function (pi: ExtensionAPI) {
 		sessionGeneration += 1;
 		clearStartupDelayTimer();
 		clearAutoRefreshTimer();
+		clearDisplayRefreshTimer();
 		refreshController?.abort();
 		refreshController = undefined;
 		currentCtx = undefined;
+		widgetLoading = false;
 		isLoading = false;
 	});
 
