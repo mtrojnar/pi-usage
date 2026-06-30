@@ -28,6 +28,8 @@ export const OPENAI_CODEX_PROVIDER = "openai-codex";
 export const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
 export const UI_REFRESH_SECONDS = parseEnvInt("PI_USAGE_UI_REFRESH_SEC", 60);
 export const PROACTIVE_REFRESH_ENABLED = parseEnvBool("PI_USAGE_PROACTIVE", true);
+export const CODEX_RESPONSE_REFRESH_ENABLED = parseEnvBool("PI_USAGE_CODEX_RESPONSE_REFRESH", PROACTIVE_REFRESH_ENABLED);
+export const CODEX_RESPONSE_REFRESH_SECONDS = parseEnvInt("PI_USAGE_CODEX_RESPONSE_REFRESH_SEC", 300);
 
 // ───────── Env / Config Helpers ─────────
 

@@ -143,7 +143,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/OpenCode Go status passively when headers expose usage or rate-limit details, avoiding extra requests during active use. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/OpenCode Go status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
 By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
@@ -217,7 +217,7 @@ If that endpoint fails, pi-usage falls back to the older Codex backend header pr
 
 The fallback makes a **minimal streaming request** (model: `gpt-5.4-mini`, instruction: "ok", input: "hi") to capture these headers. It should only run when the usage endpoint is unavailable.
 
-During normal Codex model use, pi-usage passively reads the same `x-codex-*` headers from pi's `after_provider_response` extension event and updates cached values immediately. `429` responses with `retry-after` are also reflected as rate-limited status.
+During normal Codex model use, pi-usage passively reads the same `x-codex-*` headers from pi's `after_provider_response` extension event and updates cached values immediately. `429` responses with `retry-after` are also reflected as rate-limited status. When Codex uses WebSocket transport, response headers are unavailable, so pi-usage performs a lightweight ChatGPT usage-endpoint refresh on dirty 5-minute windows, or after six clean windows by default.
 
 ### OpenCode Go
 
@@ -248,6 +248,8 @@ Widget display uses pi-style extension config files:
 | `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive header updates defer matching auto checks |
 | `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds |
 | `PI_USAGE_PROACTIVE` | `true` | Run startup and periodic network checks; set `false` for passive headers plus manual `/usage` only |
+| `PI_USAGE_CODEX_RESPONSE_REFRESH` | same as `PI_USAGE_PROACTIVE` | Refresh Codex usage endpoint while Codex responses transfer data; useful because WebSocket transport has no usage headers |
+| `PI_USAGE_CODEX_RESPONSE_REFRESH_SEC` | `300` | Codex activity-window length; dirty windows refresh usage, six clean windows produce idle refresh by default |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |

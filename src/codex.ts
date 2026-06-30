@@ -67,7 +67,7 @@ export function windowResetAt(window: OpenAIUsageWindow | null | undefined): num
 
 // ───────── Codex Usage Check ─────────
 
-async function checkCodexUsageFromUsageApi(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsageApiResult> {
+export async function checkCodexUsageFromUsageApi(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsageApiResult> {
 	try {
 		const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 

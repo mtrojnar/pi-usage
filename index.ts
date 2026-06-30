@@ -23,10 +23,12 @@ import {
 	USAGE_WIDGET_FLAG,
 	WIDGET_ID,
 	OPENAI_CODEX_PROVIDER,
+	CODEX_RESPONSE_REFRESH_ENABLED,
+	CODEX_RESPONSE_REFRESH_SECONDS,
 	getOpenCodeGoQuotaConfig,
 	readUsageWidgetSetting,
 } from "./src/config.ts";
-import { getCodexToken, checkCodexUsage, parseCodexUsageHeaders } from "./src/codex.ts";
+import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getOpenCodeApiKey, checkOpenCodeGoUsage, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
 import {
 	buildStartupUsageMessage,
@@ -55,7 +57,12 @@ export default function (pi: ExtensionAPI) {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let displayTimer: ReturnType<typeof setInterval> | undefined;
 	let startupDelayTimer: ReturnType<typeof setTimeout> | undefined;
+	let codexResponseRefreshTimer: ReturnType<typeof setInterval> | undefined;
 	let refreshController: AbortController | undefined;
+	let codexResponseRefreshController: AbortController | undefined;
+	let codexResponseDataTransferred = false;
+	let codexResponseCleanTicks = 0;
+	let codexUsageRequestAt = 0;
 	let codexPassiveAt = 0;
 	let goPassiveAt = 0;
 	let goPassiveQuotaAt = 0;
@@ -129,6 +136,60 @@ export default function (pi: ExtensionAPI) {
 		return (ctx as UsageContext & { model?: { id?: string } }).model?.id;
 	}
 
+	function messageRole(message: unknown): string | undefined {
+		return (message as { role?: string } | undefined)?.role;
+	}
+
+	function messageProvider(message: unknown): string | undefined {
+		return (message as { provider?: string } | undefined)?.provider;
+	}
+
+	function messageHasTransferredUsageData(message: unknown): boolean {
+		const usage = (message as {
+			usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number };
+		} | undefined)?.usage;
+		if (!usage) return false;
+		return [usage.totalTokens, usage.input, usage.output, usage.cacheRead, usage.cacheWrite]
+			.some((value) => typeof value === "number" && value > 0);
+	}
+
+	function recentCodexUsageRequest(maxAgeSeconds = CODEX_RESPONSE_REFRESH_SECONDS): boolean {
+		return codexUsageRequestAt > 0 && Date.now() - codexUsageRequestAt < maxAgeSeconds * 1000;
+	}
+
+	function codexResponseIdleRefreshTicks(): number {
+		return Math.max(1, Math.ceil((AUTO_REFRESH_MINUTES * 60) / CODEX_RESPONSE_REFRESH_SECONDS));
+	}
+
+	function refreshCodexUsageFromSchedule(ctx: UsageContext, generation: number = sessionGeneration): void {
+		if (!ctx.hasUI || !CODEX_RESPONSE_REFRESH_ENABLED) return;
+		if (generation !== sessionGeneration || recentCodexUsageRequest()) return;
+
+		codexResponseRefreshController?.abort();
+		const controller = new AbortController();
+		codexResponseRefreshController = controller;
+
+		void (async () => {
+			try {
+				const codexAuth = await getCodexToken();
+				if (!codexAuth || controller.signal.aborted || generation !== sessionGeneration) return;
+
+				codexUsageRequestAt = Date.now();
+				codexResponseCleanTicks = 0;
+				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal);
+				if (result.success && !controller.signal.aborted && generation === sessionGeneration) {
+					codexUsage = normalizeCodexResetTimes(result.usage);
+					widgetLoading = false;
+					renderCachedUsage(ctx, false);
+				}
+			} catch {
+				// Best-effort scheduled refresh; keep cached values on failure.
+			} finally {
+				if (codexResponseRefreshController === controller) codexResponseRefreshController = undefined;
+			}
+		})();
+	}
+
 	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
 		if (!ctx.hasUI) return;
 		if (isLoading) {
@@ -160,10 +221,12 @@ export default function (pi: ExtensionAPI) {
 			const checks: Promise<void>[] = [];
 			const signal = controller.signal;
 
-			// Check Codex; recent passive headers defer auto probes.
-			const skipCodexCheck = trigger === "auto" && passiveUpdateIsFresh(codexPassiveAt);
+			// Check Codex; activity scheduler or recent passive headers defer auto probes.
+			const skipCodexCheck = trigger === "auto" && (CODEX_RESPONSE_REFRESH_ENABLED || passiveUpdateIsFresh(codexPassiveAt) || recentCodexUsageRequest());
 			const codexAuth = skipCodexCheck ? undefined : await getCodexToken();
 			if (codexAuth) {
+				codexUsageRequestAt = Date.now();
+				codexResponseCleanTicks = 0;
 				checks.push(
 					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal).then((result) => {
 						if (!signal.aborted && generation === sessionGeneration) codexUsage = normalizeCodexResetTimes(result);
@@ -237,6 +300,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function clearCodexResponseRefreshTimer(): void {
+		if (codexResponseRefreshTimer) {
+			clearInterval(codexResponseRefreshTimer);
+			codexResponseRefreshTimer = undefined;
+		}
+	}
+
 	function startAutoRefreshTimer(ctx: UsageContext, generation: number = sessionGeneration): void {
 		if (!ctx.hasUI || !PROACTIVE_REFRESH_ENABLED) return;
 		clearAutoRefreshTimer();
@@ -257,9 +327,33 @@ export default function (pi: ExtensionAPI) {
 		unrefTimer(displayTimer);
 	}
 
+	function startCodexResponseRefreshTimer(ctx: UsageContext, generation: number = sessionGeneration): void {
+		if (!ctx.hasUI || !CODEX_RESPONSE_REFRESH_ENABLED) return;
+		clearCodexResponseRefreshTimer();
+		codexResponseRefreshTimer = setInterval(() => {
+			if (generation !== sessionGeneration) return;
+
+			if (codexResponseDataTransferred) {
+				if (recentCodexUsageRequest()) return;
+				codexResponseDataTransferred = false;
+				codexResponseCleanTicks = 0;
+				refreshCodexUsageFromSchedule(ctx, generation);
+				return;
+			}
+
+			codexResponseCleanTicks += 1;
+			if (codexResponseCleanTicks < codexResponseIdleRefreshTicks()) return;
+			codexResponseCleanTicks = 0;
+			if (passiveUpdateIsFresh(codexPassiveAt) || recentCodexUsageRequest()) return;
+			refreshCodexUsageFromSchedule(ctx, generation);
+		}, CODEX_RESPONSE_REFRESH_SECONDS * 1000);
+		unrefTimer(codexResponseRefreshTimer);
+	}
+
 	function startTimers(ctx: UsageContext, generation: number = sessionGeneration): void {
 		startAutoRefreshTimer(ctx, generation);
 		startDisplayRefreshTimer(ctx, generation);
+		startCodexResponseRefreshTimer(ctx, generation);
 	}
 
 	// ── Passive provider response headers ──
@@ -295,9 +389,20 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// ── Mark Codex activity; refresh usage at most once per activity window ──
+	pi.on("message_end", (event, ctx) => {
+		if (!ctx.hasUI || !CODEX_RESPONSE_REFRESH_ENABLED) return;
+		if (messageRole(event.message) !== "assistant") return;
+		if (messageProvider(event.message) !== OPENAI_CODEX_PROVIDER) return;
+		if (!messageHasTransferredUsageData(event.message)) return;
+		codexResponseDataTransferred = true;
+	});
+
 	// ── Startup check + auto-refresh ──
 	pi.on("session_start", async (event, ctx) => {
 		const generation = ++sessionGeneration;
+		codexResponseDataTransferred = false;
+		codexResponseCleanTicks = 0;
 		if (!ctx.hasUI) return;
 
 		if (PROACTIVE_REFRESH_ENABLED && (event.reason === "startup" || event.reason === "reload")) {
@@ -326,8 +431,13 @@ export default function (pi: ExtensionAPI) {
 		clearStartupDelayTimer();
 		clearAutoRefreshTimer();
 		clearDisplayRefreshTimer();
+		clearCodexResponseRefreshTimer();
+		codexResponseDataTransferred = false;
+		codexResponseCleanTicks = 0;
 		refreshController?.abort();
 		refreshController = undefined;
+		codexResponseRefreshController?.abort();
+		codexResponseRefreshController = undefined;
 		widgetLoading = false;
 		isLoading = false;
 	});
