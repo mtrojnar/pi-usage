@@ -27,12 +27,17 @@ export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
 export const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
 export const UI_REFRESH_SECONDS = parseEnvInt("PI_USAGE_UI_REFRESH_SEC", 60);
+export const PROACTIVE_REFRESH_ENABLED = parseEnvBool("PI_USAGE_PROACTIVE", true);
 
 // ───────── Env / Config Helpers ─────────
 
 export function parseEnvInt(name: string, fallback: number): number {
 	const parsed = parseInt(process.env[name] ?? "", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function parseEnvBool(name: string, fallback: boolean): boolean {
+	return parseBoolValue(process.env[name]) ?? fallback;
 }
 
 export function parseBoolValue(value: string | undefined): boolean | undefined {

@@ -22,8 +22,10 @@ import { cancelResponseBody, createTimeoutSignal, readResponseText } from "./htt
 
 // ───────── Constants ─────────
 
+const PREFERRED_GO_PROBE_MODEL = "qwen3.5-plus";
+
 export const DOCUMENTED_GO_MODELS: GoCheckModel[] = [
-	{ id: "qwen3.5-plus", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 1 },
+	{ id: PREFERRED_GO_PROBE_MODEL, api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 1 },
 	{ id: "minimax-m2.5", api: "anthropic-messages", endpoint: "https://opencode.ai/zen/go/v1/messages", costRank: 2 },
 	{ id: "minimax-m2.7", api: "anthropic-messages", endpoint: "https://opencode.ai/zen/go/v1/messages", costRank: 3 },
 	{ id: "qwen3.6-plus", api: "openai-completions", endpoint: "https://opencode.ai/zen/go/v1/chat/completions", costRank: 4 },
@@ -136,9 +138,136 @@ export function isGlobalGoLimit(message: string): boolean {
 	return /insufficient.*(credit|balance|fund)|balance.*insufficient|credits? exhausted|opencode.*(quota|limit)|go.*(quota|limit)|subscription.*(quota|limit)/i.test(message);
 }
 
-export function isPerModelUnavailable(status: number, message: string): boolean {
-	if (status === 400 || status === 404 || status === 422) return true;
+export function isPerModelUnavailable(_status: number, message: string): boolean {
 	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
+}
+
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+	return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+}
+
+function parseOptionalNumber(headers: Record<string, string>, names: string[]): number | undefined {
+	for (const name of names) {
+		const value = headerValue(headers, name);
+		if (value === undefined || value === "") continue;
+		const parsed = Number(value);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return undefined;
+}
+
+function parseRetryAfterSeconds(value: string | undefined): number {
+	if (!value) return 0;
+	const seconds = Number(value);
+	if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds));
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? Math.max(0, Math.round((timestamp - Date.now()) / 1000)) : 0;
+}
+
+function isGoModelStatus(value: string | undefined): value is GoModelStatus {
+	return value === "available" || value === "rate_limited" || value === "credits_error" || value === "error" || value === "no_key";
+}
+
+function goQuotaHeaderNames(window: "rolling" | "weekly" | "monthly", metric: string): string[] {
+	return [
+		`x-opencode-go-${window}-${metric}`,
+		`x-opencode-go-quota-${window}-${metric}`,
+		`x-opencode-${window}-${metric}`,
+	];
+}
+
+function parsePassiveQuotaWindow(headers: Record<string, string>, window: "rolling" | "weekly" | "monthly"): {
+	usedPercent?: number;
+	remainingPercent?: number;
+	resetAfterSeconds?: number;
+	resetAt?: number;
+	hasHeaders: boolean;
+} {
+	const used = parseOptionalNumber(headers, goQuotaHeaderNames(window, "used-percent"));
+	const remaining = parseOptionalNumber(headers, goQuotaHeaderNames(window, "remaining-percent"));
+	const resetAfter = parseOptionalNumber(headers, [
+		...goQuotaHeaderNames(window, "reset-after-seconds"),
+		...goQuotaHeaderNames(window, "reset-after"),
+	]);
+	const resetAt = parseOptionalNumber(headers, goQuotaHeaderNames(window, "reset-at"));
+
+	return {
+		usedPercent: used !== undefined ? clampPercent(used) : undefined,
+		remainingPercent: remaining !== undefined
+			? clampPercent(remaining)
+			: used !== undefined
+				? clampPercent(100 - used)
+				: undefined,
+		resetAfterSeconds: resetAfter !== undefined ? Math.max(0, Math.round(resetAfter)) : undefined,
+		resetAt: resetAt !== undefined ? Math.max(0, Math.round(resetAt)) : undefined,
+		hasHeaders: used !== undefined || remaining !== undefined || resetAfter !== undefined || resetAt !== undefined,
+	};
+}
+
+function hasOpenCodeGoPassiveHeaders(headers: Record<string, string>): boolean {
+	return Object.keys(headers).some((name) => name.toLowerCase().startsWith("x-opencode-go-"));
+}
+
+export function parseOpenCodeGoUsageHeaders(
+	headers: Record<string, string>,
+	status: number,
+	modelId?: string,
+	previous?: OpenCodeGoUsage,
+): OpenCodeGoUsage | undefined {
+	const statusHeader = headerValue(headers, "x-opencode-go-status");
+	const headerStatus = isGoModelStatus(statusHeader) ? statusHeader : undefined;
+	const responseModel = headerValue(headers, "x-opencode-go-model") ?? modelId;
+	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
+	const rolling = parsePassiveQuotaWindow(headers, "rolling");
+	const weekly = parsePassiveQuotaWindow(headers, "weekly");
+	const monthly = parsePassiveQuotaWindow(headers, "monthly");
+	const hasQuotaHeaders = rolling.hasHeaders || weekly.hasHeaders || monthly.hasHeaders;
+	const hasPassiveSignal = hasOpenCodeGoPassiveHeaders(headers) || hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && responseModel);
+	if (!hasPassiveSignal) return undefined;
+
+	const inferredStatus: GoModelStatus = headerStatus
+		?? (status === 429
+			? "rate_limited"
+			: status === 401 || status === 403
+				? "credits_error"
+				: status >= 400
+					? "error"
+					: "available");
+	const rateLimited = inferredStatus === "rate_limited";
+	const available = inferredStatus === "available";
+	const retryMessage = retryAfterSeconds > 0 ? `Rate limited; retry after ${retryAfterSeconds}s` : "Rate limited";
+
+	return {
+		available,
+		status: inferredStatus,
+		workingModel: available ? responseModel ?? previous?.workingModel : previous?.workingModel,
+		rateLimitedModel: rateLimited ? responseModel ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
+		checkedModels: previous?.checkedModels,
+		totalModels: previous?.totalModels,
+		quotaConfigured: hasQuotaHeaders ? true : previous?.quotaConfigured,
+		quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
+		rollingUsedPercent: rolling.usedPercent ?? previous?.rollingUsedPercent,
+		rollingRemainingPercent: rolling.remainingPercent ?? previous?.rollingRemainingPercent,
+		rollingResetAfterSeconds: rolling.resetAfterSeconds ?? previous?.rollingResetAfterSeconds,
+		rollingResetAt: rolling.resetAt ?? previous?.rollingResetAt,
+		weeklyUsedPercent: weekly.usedPercent ?? previous?.weeklyUsedPercent,
+		weeklyRemainingPercent: weekly.remainingPercent ?? previous?.weeklyRemainingPercent,
+		weeklyResetAfterSeconds: weekly.resetAfterSeconds ?? previous?.weeklyResetAfterSeconds,
+		weeklyResetAt: weekly.resetAt ?? previous?.weeklyResetAt,
+		monthlyUsedPercent: monthly.usedPercent ?? previous?.monthlyUsedPercent,
+		monthlyRemainingPercent: monthly.remainingPercent ?? previous?.monthlyRemainingPercent,
+		monthlyResetAfterSeconds: monthly.resetAfterSeconds ?? previous?.monthlyResetAfterSeconds,
+		monthlyResetAt: monthly.resetAt ?? previous?.monthlyResetAt,
+		quotaError: hasQuotaHeaders ? undefined : previous?.quotaError,
+		errorMessage: rateLimited
+			? retryMessage
+			: inferredStatus === "credits_error"
+				? `HTTP ${status}`
+				: inferredStatus === "error"
+					? `HTTP ${status}`
+					: undefined,
+		error: undefined,
+	};
 }
 
 
@@ -236,7 +365,11 @@ async function getOpenCodeGoCheckModels(): Promise<GoCheckModel[]> {
 	} catch {
 		// pi-ai not available — use only documented models
 	}
-	return Array.from(modelsById.values()).sort((a, b) => a.costRank - b.costRank || a.id.localeCompare(b.id));
+	return Array.from(modelsById.values()).sort((a, b) => {
+		if (a.id === PREFERRED_GO_PROBE_MODEL) return -1;
+		if (b.id === PREFERRED_GO_PROBE_MODEL) return 1;
+		return a.costRank - b.costRank || a.id.localeCompare(b.id);
+	});
 }
 
 async function probeOpenCodeGoModel(apiKey: string, model: GoCheckModel, signal: AbortSignal): Promise<Response> {
@@ -284,7 +417,6 @@ async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortS
 
 	const models = await getOpenCodeGoCheckModels();
 	let checkedModels = 0;
-	let lastRateLimit: { model: string; message: string } | undefined;
 	let lastUnavailable: { model: string; message: string } | undefined;
 
 	try {
@@ -306,7 +438,6 @@ async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortS
 					available: true,
 					status: "available",
 					workingModel: model.id,
-					rateLimitedModel: lastRateLimit?.model,
 					checkedModels,
 					totalModels: models.length,
 				};
@@ -314,19 +445,18 @@ async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortS
 
 			if (response.status === 429) {
 				const errorMsg = await readErrorMessage(response, "Rate limited", signal);
-				lastRateLimit = { model: model.id, message: errorMsg };
-
-				if (isGlobalGoLimit(errorMsg)) {
-					return {
-						available: false,
-						status: "rate_limited",
-						rateLimitedModel: model.id,
-						checkedModels,
-						totalModels: models.length,
-						errorMessage: errorMsg,
-					};
+				if (isPerModelUnavailable(response.status, errorMsg)) {
+					lastUnavailable = { model: model.id, message: errorMsg };
+					continue;
 				}
-				continue;
+				return {
+					available: false,
+					status: "rate_limited",
+					rateLimitedModel: model.id,
+					checkedModels,
+					totalModels: models.length,
+					errorMessage: errorMsg,
+				};
 			}
 
 			if (response.status === 401 || response.status === 403) {
@@ -355,17 +485,6 @@ async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortS
 				checkedModels,
 				totalModels: models.length,
 				errorMessage: `${model.id}: ${errorMsg}`,
-			};
-		}
-
-		if (lastRateLimit) {
-			return {
-				available: false,
-				status: "rate_limited",
-				rateLimitedModel: lastRateLimit.model,
-				checkedModels,
-				totalModels: models.length,
-				errorMessage: lastRateLimit.message,
 			};
 		}
 

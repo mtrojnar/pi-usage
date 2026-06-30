@@ -23,6 +23,7 @@ import {
 	extractAccountId,
 	getOpenCodeGoQuotaConfig,
 	parseBoolValue,
+	parseEnvBool,
 	parseEnvInt,
 	readJsonObject,
 	resolveConfigValue,
@@ -30,6 +31,7 @@ import {
 	widgetSettingFromConfig,
 } from "./src/config.ts";
 import {
+	parseCodexUsageHeaders,
 	windowMinutes,
 	windowResetAfterSeconds,
 	windowResetAt,
@@ -53,6 +55,7 @@ import {
 	isGlobalGoLimit,
 	isPerModelUnavailable,
 	parseOpenCodeGoDashboardUsage,
+	parseOpenCodeGoUsageHeaders,
 	parseOpenCodeGoUsageWindow,
 	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
@@ -89,6 +92,31 @@ describe("parseEnvInt", () => {
 		process.env.TEST_PARSE_INT = "abc";
 		assert.equal(parseEnvInt("TEST_PARSE_INT", 30), 30);
 		delete process.env.TEST_PARSE_INT;
+	});
+});
+
+// ───────── parseEnvBool ─────────
+
+describe("parseEnvBool", () => {
+	afterEach(() => {
+		delete process.env.TEST_PARSE_BOOL;
+	});
+
+	it("returns fallback when env var is missing", () => {
+		assert.equal(parseEnvBool("TEST_PARSE_BOOL", true), true);
+		assert.equal(parseEnvBool("TEST_PARSE_BOOL", false), false);
+	});
+
+	it("returns parsed boolean", () => {
+		process.env.TEST_PARSE_BOOL = "false";
+		assert.equal(parseEnvBool("TEST_PARSE_BOOL", true), false);
+		process.env.TEST_PARSE_BOOL = "yes";
+		assert.equal(parseEnvBool("TEST_PARSE_BOOL", false), true);
+	});
+
+	it("returns fallback for unrecognized value", () => {
+		process.env.TEST_PARSE_BOOL = "maybe";
+		assert.equal(parseEnvBool("TEST_PARSE_BOOL", true), true);
 	});
 });
 
@@ -457,16 +485,10 @@ describe("resolveConfigValue", () => {
 // ───────── isPerModelUnavailable ─────────
 
 describe("isPerModelUnavailable", () => {
-	it("returns true for status 400", () => {
-		assert.equal(isPerModelUnavailable(400, "bad request"), true);
-	});
-
-	it("returns true for status 404", () => {
-		assert.equal(isPerModelUnavailable(404, "not found"), true);
-	});
-
-	it("returns true for status 422", () => {
-		assert.equal(isPerModelUnavailable(422, "unprocessable"), true);
+	it("returns false for ambiguous status-only errors", () => {
+		assert.equal(isPerModelUnavailable(400, "bad request"), false);
+		assert.equal(isPerModelUnavailable(404, "not found"), false);
+		assert.equal(isPerModelUnavailable(422, "unprocessable"), false);
 	});
 
 	it("returns true for model disabled", () => {
@@ -514,6 +536,90 @@ describe("isGlobalGoLimit", () => {
 
 	it("returns false for unrelated messages", () => {
 		assert.equal(isGlobalGoLimit("rate limit per model"), false);
+	});
+});
+
+// ───────── passive header parsing ─────────
+
+describe("parseCodexUsageHeaders", () => {
+	it("parses Codex quota headers", () => {
+		const usage = parseCodexUsageHeaders({
+			"x-codex-plan-type": "plus",
+			"x-codex-active-limit": "normal",
+			"x-codex-primary-used-percent": "42",
+			"x-codex-secondary-used-percent": "55",
+			"x-codex-primary-window-minutes": "300",
+			"x-codex-secondary-window-minutes": "10080",
+			"x-codex-primary-reset-after-seconds": "120",
+			"x-codex-secondary-reset-at": "2000000000",
+			"x-codex-credits-has-credits": "true",
+			"x-codex-credits-balance": "$5.00",
+		});
+
+		assert.ok(usage);
+		assert.equal(usage.planType, "plus");
+		assert.equal(usage.primaryUsedPercent, 42);
+		assert.equal(usage.secondaryUsedPercent, 55);
+		assert.equal(usage.primaryResetAfterSeconds, 120);
+		assert.equal(usage.secondaryResetAt, 2000000000);
+		assert.equal(usage.creditsHasCredits, true);
+		assert.equal(usage.creditsBalance, "$5.00");
+		assert.equal(usage.source, "headers");
+	});
+
+	it("parses Codex 429 retry-after without x-codex headers", () => {
+		const usage = parseCodexUsageHeaders({ "retry-after": "30" }, 429);
+		assert.ok(usage);
+		assert.equal(usage.activeLimit, "rate_limited");
+		assert.equal(usage.primaryUsedPercent, 100);
+		assert.equal(usage.primaryResetAfterSeconds, 30);
+	});
+
+	it("returns undefined when no relevant headers", () => {
+		assert.equal(parseCodexUsageHeaders({ server: "test" }, 200), undefined);
+	});
+});
+
+describe("parseOpenCodeGoUsageHeaders", () => {
+	it("parses passive Go quota headers", () => {
+		const usage = parseOpenCodeGoUsageHeaders({
+			"x-opencode-go-status": "available",
+			"x-opencode-go-model": "glm-5.1",
+			"x-opencode-go-rolling-used-percent": "25",
+			"x-opencode-go-weekly-used-percent": "50",
+			"x-opencode-go-monthly-reset-after-seconds": "3600",
+		}, 200);
+
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.workingModel, "glm-5.1");
+		assert.equal(usage.rollingUsedPercent, 25);
+		assert.equal(usage.rollingRemainingPercent, 75);
+		assert.equal(usage.weeklyUsedPercent, 50);
+		assert.equal(usage.monthlyResetAfterSeconds, 3600);
+		assert.equal(usage.quotaSource, "response headers");
+	});
+
+	it("infers rate limited Go status from 429", () => {
+		const usage = parseOpenCodeGoUsageHeaders({ "retry-after": "15" }, 429, "glm-5.1");
+		assert.ok(usage);
+		assert.equal(usage.status, "rate_limited");
+		assert.equal(usage.rateLimitedModel, "glm-5.1");
+		assert.match(usage.errorMessage ?? "", /15s/);
+	});
+
+	it("preserves previous Go quota when only model availability is known", () => {
+		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", {
+			available: false,
+			status: "rate_limited",
+			rollingUsedPercent: 20,
+			rollingRemainingPercent: 80,
+		});
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.workingModel, "glm-5.1");
+		assert.equal(usage.rollingUsedPercent, 20);
+		assert.equal(usage.errorMessage, undefined);
 	});
 });
 

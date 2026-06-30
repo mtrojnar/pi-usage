@@ -21,7 +21,7 @@ export interface CodexUsage {
 	creditsHasCredits: boolean;
 	creditsBalance: string;
 	creditsUnlimited: boolean;
-	source?: "usage_api" | "probe";
+	source?: "usage_api" | "probe" | "headers";
 	error?: string;
 }
 

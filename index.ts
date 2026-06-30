@@ -17,15 +17,17 @@ import type { CodexUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "
 import {
 	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
+	PROACTIVE_REFRESH_ENABLED,
 	UI_REFRESH_SECONDS,
 	NO_USAGE_WIDGET_FLAG,
 	USAGE_WIDGET_FLAG,
 	WIDGET_ID,
+	OPENAI_CODEX_PROVIDER,
 	getOpenCodeGoQuotaConfig,
 	readUsageWidgetSetting,
 } from "./src/config.ts";
-import { getCodexToken, checkCodexUsage } from "./src/codex.ts";
-import { getOpenCodeApiKey, checkOpenCodeGoUsage } from "./src/opencode-go.ts";
+import { getCodexToken, checkCodexUsage, parseCodexUsageHeaders } from "./src/codex.ts";
+import { getOpenCodeApiKey, checkOpenCodeGoUsage, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
 import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
@@ -54,7 +56,9 @@ export default function (pi: ExtensionAPI) {
 	let displayTimer: ReturnType<typeof setInterval> | undefined;
 	let startupDelayTimer: ReturnType<typeof setTimeout> | undefined;
 	let refreshController: AbortController | undefined;
-	let currentCtx: UsageContext | undefined;
+	let codexPassiveAt = 0;
+	let goPassiveAt = 0;
+	let goPassiveQuotaAt = 0;
 	let sessionGeneration = 0;
 
 	function unrefTimer(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
@@ -104,6 +108,27 @@ export default function (pi: ExtensionAPI) {
 		return usage;
 	}
 
+	function hasGoQuotaData(usage: OpenCodeGoUsage | undefined): boolean {
+		return usage?.rollingUsedPercent !== undefined || usage?.weeklyUsedPercent !== undefined || usage?.monthlyUsedPercent !== undefined;
+	}
+
+	function passiveUpdateIsFresh(timestamp: number): boolean {
+		return timestamp > 0 && Date.now() - timestamp < AUTO_REFRESH_MINUTES * 60 * 1000;
+	}
+
+	function hasHeaderPrefix(headers: Record<string, string>, prefix: string): boolean {
+		const normalizedPrefix = prefix.toLowerCase();
+		return Object.keys(headers).some((name) => name.toLowerCase().startsWith(normalizedPrefix));
+	}
+
+	function modelProvider(ctx: UsageContext): string | undefined {
+		return (ctx as UsageContext & { model?: { provider?: string } }).model?.provider;
+	}
+
+	function modelId(ctx: UsageContext): string | undefined {
+		return (ctx as UsageContext & { model?: { id?: string } }).model?.id;
+	}
+
 	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
 		if (!ctx.hasUI) return;
 		if (isLoading) {
@@ -111,7 +136,6 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		isLoading = true;
-		currentCtx = ctx;
 		const generation = sessionGeneration;
 		const controller = new AbortController();
 		let refreshTimedOut = false;
@@ -136,8 +160,9 @@ export default function (pi: ExtensionAPI) {
 			const checks: Promise<void>[] = [];
 			const signal = controller.signal;
 
-			// Check Codex
-			const codexAuth = await getCodexToken();
+			// Check Codex; recent passive headers defer auto probes.
+			const skipCodexCheck = trigger === "auto" && passiveUpdateIsFresh(codexPassiveAt);
+			const codexAuth = skipCodexCheck ? undefined : await getCodexToken();
 			if (codexAuth) {
 				checks.push(
 					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal).then((result) => {
@@ -146,24 +171,28 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
-			// Check OpenCode Go
-			const goKey = getOpenCodeApiKey();
+			// Check OpenCode Go; passive model headers can defer probes, but dashboard quota still needs proactive fetches.
 			const goQuotaState = getOpenCodeGoQuotaConfig();
-			if (goKey || goQuotaState.config || goQuotaState.error) {
+			const skipGoCheck = trigger === "auto"
+				&& passiveUpdateIsFresh(goPassiveAt)
+				&& (!goQuotaState.config || (hasGoQuotaData(goUsage) && passiveUpdateIsFresh(goPassiveQuotaAt)))
+				&& !goQuotaState.error;
+			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
+			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
 				checks.push(
 					checkOpenCodeGoUsage(goKey, goQuotaState, signal).then((result) => {
 						if (!signal.aborted && generation === sessionGeneration) goUsage = normalizeGoResetTimes(result);
 					}),
 				);
-			} else {
+			} else if (!skipGoCheck) {
 				goUsage = undefined;
 			}
 
 			// Run checks in parallel
 			await Promise.allSettled(checks);
 
-			if (signal.aborted || generation !== sessionGeneration || currentCtx !== ctx) {
-				if (generation === sessionGeneration && currentCtx === ctx) {
+			if (signal.aborted || generation !== sessionGeneration) {
+				if (generation === sessionGeneration) {
 					widgetLoading = false;
 					renderCachedUsage(ctx, false);
 					if (refreshTimedOut && trigger !== "auto") ctx.ui.notify("Usage check timed out", "warning");
@@ -209,10 +238,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function startAutoRefreshTimer(ctx: UsageContext, generation: number = sessionGeneration): void {
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI || !PROACTIVE_REFRESH_ENABLED) return;
 		clearAutoRefreshTimer();
 		refreshTimer = setInterval(() => {
-			if (generation !== sessionGeneration || currentCtx !== ctx) return;
+			if (generation !== sessionGeneration) return;
 			refreshUsage(ctx, "auto").catch(() => {});
 		}, AUTO_REFRESH_MINUTES * 60 * 1000);
 		unrefTimer(refreshTimer);
@@ -222,7 +251,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		clearDisplayRefreshTimer();
 		displayTimer = setInterval(() => {
-			if (generation !== sessionGeneration || currentCtx !== ctx) return;
+			if (generation !== sessionGeneration) return;
 			renderCachedUsage(ctx, widgetLoading);
 		}, UI_REFRESH_SECONDS * 1000);
 		unrefTimer(displayTimer);
@@ -233,25 +262,57 @@ export default function (pi: ExtensionAPI) {
 		startDisplayRefreshTimer(ctx, generation);
 	}
 
+	// ── Passive provider response headers ──
+	pi.on("after_provider_response", async (event, ctx) => {
+		if (!ctx.hasUI) return;
+
+		let updated = false;
+		const provider = modelProvider(ctx);
+		const id = modelId(ctx);
+
+		if (provider === OPENAI_CODEX_PROVIDER || hasHeaderPrefix(event.headers, "x-codex-")) {
+			const parsed = parseCodexUsageHeaders(event.headers, event.status);
+			if (parsed) {
+				codexUsage = normalizeCodexResetTimes(parsed);
+				codexPassiveAt = Date.now();
+				updated = true;
+			}
+		}
+
+		if (provider === "opencode-go" || hasHeaderPrefix(event.headers, "x-opencode-go-")) {
+			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, id, goUsage);
+			if (parsed) {
+				goUsage = normalizeGoResetTimes(parsed);
+				goPassiveAt = Date.now();
+				if (hasGoQuotaData(parsed)) goPassiveQuotaAt = goPassiveAt;
+				updated = true;
+			}
+		}
+
+		if (updated) {
+			widgetLoading = false;
+			renderCachedUsage(ctx, false);
+		}
+	});
+
 	// ── Startup check + auto-refresh ──
 	pi.on("session_start", async (event, ctx) => {
 		const generation = ++sessionGeneration;
-		currentCtx = ctx;
 		if (!ctx.hasUI) return;
 
-		if (event.reason === "startup" || event.reason === "reload") {
+		if (PROACTIVE_REFRESH_ENABLED && (event.reason === "startup" || event.reason === "reload")) {
 			// Block /usage during startup delay to avoid duplicate checks
 			isLoading = true;
 			clearStartupDelayTimer();
 			// Small delay to let TUI settle, then refresh; start timers only after first check
 			startupDelayTimer = setTimeout(() => {
 				startupDelayTimer = undefined;
-				if (generation !== sessionGeneration || currentCtx !== ctx) return;
+				if (generation !== sessionGeneration) return;
 				isLoading = false;
 				refreshUsage(ctx, "startup")
 					.catch(() => {})
 					.then(() => {
-						if (generation === sessionGeneration && currentCtx === ctx) startTimers(ctx, generation);
+						if (generation === sessionGeneration) startTimers(ctx, generation);
 					});
 			}, 500);
 			unrefTimer(startupDelayTimer);
@@ -267,7 +328,6 @@ export default function (pi: ExtensionAPI) {
 		clearDisplayRefreshTimer();
 		refreshController?.abort();
 		refreshController = undefined;
-		currentCtx = undefined;
 		widgetLoading = false;
 		isLoading = false;
 	});
@@ -284,7 +344,7 @@ export default function (pi: ExtensionAPI) {
 // ───────── Re-exported for testing ─────────
 
 export { clampPercent, formatDuration, formatResetTime, parseHeaderBool, parseHeaderNumber, progressBar, statusIcon, truncate, usageColor } from "./src/format.ts";
-export { dedupe, parseBoolValue, parseEnvInt, resolveConfigValue } from "./src/config.ts";
-export { windowMinutes, windowResetAfterSeconds, windowResetAt, windowUsedPercent } from "./src/codex.ts";
+export { dedupe, parseBoolValue, parseEnvBool, parseEnvInt, resolveConfigValue } from "./src/config.ts";
+export { parseCodexUsageHeaders, windowMinutes, windowResetAfterSeconds, windowResetAt, windowUsedPercent } from "./src/codex.ts";
 export { footerResetDuration, footerUsageColor } from "./src/render.ts";
-export { isGlobalGoLimit, isPerModelUnavailable, resolveModelEndpoint } from "./src/opencode-go.ts";
+export { isGlobalGoLimit, isPerModelUnavailable, parseOpenCodeGoUsageHeaders, resolveModelEndpoint } from "./src/opencode-go.ts";

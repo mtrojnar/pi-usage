@@ -150,6 +150,69 @@ const PROBE_ERROR_BASE: Omit<CodexUsage, "error"> = {
 	source: "probe",
 };
 
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+	return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+}
+
+function hasHeaderPrefix(headers: Record<string, string>, prefix: string): boolean {
+	const normalizedPrefix = prefix.toLowerCase();
+	return Object.keys(headers).some((name) => name.toLowerCase().startsWith(normalizedPrefix));
+}
+
+export function parseRetryAfterSeconds(value: string | undefined): number {
+	if (!value) return 0;
+	const seconds = Number(value);
+	if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds));
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? Math.max(0, Math.round((timestamp - Date.now()) / 1000)) : 0;
+}
+
+export function parseCodexUsageHeaders(headers: Record<string, string>, status: number = 200): CodexUsage | undefined {
+	const getHeader = (name: string): string | undefined => headerValue(headers, name);
+	const hasCodexHeaders = hasHeaderPrefix(headers, "x-codex-");
+	if (!hasCodexHeaders && status !== 429) return undefined;
+
+	const retryAfterSeconds = parseRetryAfterSeconds(getHeader("retry-after"));
+	const primaryResetAfterSeconds = parseHeaderNumber(
+		getHeader("x-codex-primary-reset-after-seconds"),
+		retryAfterSeconds,
+	);
+	const secondaryResetAfterSeconds = parseHeaderNumber(getHeader("x-codex-secondary-reset-after-seconds"), 0);
+	const codeReviewUsedHeader = getHeader("x-codex-code-review-used-percent");
+	const codeReviewResetAfterHeader = getHeader("x-codex-code-review-reset-after-seconds");
+	const codeReviewResetAtHeader = getHeader("x-codex-code-review-reset-at");
+
+	return {
+		planType: getHeader("x-codex-plan-type") ?? "unknown",
+		activeLimit: getHeader("x-codex-active-limit") ?? (status === 429 ? "rate_limited" : "unknown"),
+		primaryUsedPercent: parseHeaderNumber(getHeader("x-codex-primary-used-percent"), status === 429 ? 100 : 0),
+		secondaryUsedPercent: parseHeaderNumber(getHeader("x-codex-secondary-used-percent"), status === 429 ? 100 : 0),
+		codeReviewUsedPercent: codeReviewUsedHeader !== undefined
+			? parseHeaderNumber(codeReviewUsedHeader, 0)
+			: undefined,
+		primaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-primary-window-minutes"), 300),
+		secondaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-secondary-window-minutes"), 10080),
+		codeReviewWindowMinutes: codeReviewUsedHeader !== undefined
+			? parseHeaderNumber(getHeader("x-codex-code-review-window-minutes"), 0)
+			: undefined,
+		primaryResetAfterSeconds,
+		secondaryResetAfterSeconds,
+		codeReviewResetAfterSeconds: codeReviewResetAfterHeader !== undefined
+			? parseHeaderNumber(codeReviewResetAfterHeader, 0)
+			: undefined,
+		primaryResetAt: parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0),
+		secondaryResetAt: parseHeaderNumber(getHeader("x-codex-secondary-reset-at"), 0),
+		codeReviewResetAt: codeReviewResetAtHeader !== undefined
+			? parseHeaderNumber(codeReviewResetAtHeader, 0)
+			: undefined,
+		primaryOverSecondaryLimitPercent: parseHeaderNumber(getHeader("x-codex-primary-over-secondary-limit-percent"), 0),
+		creditsHasCredits: parseHeaderBool(getHeader("x-codex-credits-has-credits")),
+		creditsBalance: getHeader("x-codex-credits-balance") ?? "",
+		creditsUnlimited: parseHeaderBool(getHeader("x-codex-credits-unlimited")),
+		source: "headers",
+	};
+}
+
 async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsage> {
 	const baseUrl = "https://chatgpt.com/backend-api/codex/responses";
 

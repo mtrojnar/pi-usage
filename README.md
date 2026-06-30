@@ -143,7 +143,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/OpenCode Go status passively when headers expose usage or rate-limit details, avoiding extra requests during active use. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
 By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
@@ -169,7 +169,7 @@ pi --no-usage-widget
 
 ### Manual refresh
 
-Type `/usage` in pi to refresh the display on demand.
+Type `/usage` in pi to refresh the display on demand. Manual refresh still performs the full usage check even when proactive checks are disabled.
 
 ## Example Display
 
@@ -217,6 +217,8 @@ If that endpoint fails, pi-usage falls back to the older Codex backend header pr
 
 The fallback makes a **minimal streaming request** (model: `gpt-5.4-mini`, instruction: "ok", input: "hi") to capture these headers. It should only run when the usage endpoint is unavailable.
 
+During normal Codex model use, pi-usage passively reads the same `x-codex-*` headers from pi's `after_provider_response` extension event and updates cached values immediately. `429` responses with `retry-after` are also reflected as rate-limited status.
+
 ### OpenCode Go
 
 OpenCode Go does not currently expose a public usage/balance API. pi-usage scrapes the authenticated dashboard page at `https://opencode.ai/workspace/<workspaceId>/go` and parses the embedded `rollingUsage`, `weeklyUsage`, and `monthlyUsage` quota data when `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE` are configured.
@@ -226,7 +228,9 @@ If the dashboard scrape is not configured or fails, pi-usage falls back to probi
 - **429** → rate limited
 - **401/403** → credits error or auth issue
 
-It builds the probe list from OpenCode's documented Go models, then adds any extra `opencode-go` models from pi's installed registry. It tries cheaper models first and stops at the first success or definitive global quota/auth error.
+It builds the probe list from OpenCode's documented Go models, then adds any extra `opencode-go` models from pi's installed registry. It probes the preferred cheap model (`qwen3.5-plus`) first, only tries another model when the response clearly says that model is unavailable, and stops on rate-limit, auth/quota, or ambiguous errors.
+
+During normal OpenCode Go model use, successful responses passively mark the current model as available, and `429` responses mark it as rate limited. If future OpenCode Go responses expose quota headers such as `x-opencode-go-rolling-used-percent`, those are parsed and used too. Dashboard scraping remains necessary for rolling/weekly/monthly quota percentages when those headers are absent.
 
 ## Configuration
 
@@ -241,8 +245,9 @@ Widget display uses pi-style extension config files:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes |
+| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive header updates defer matching auto checks |
 | `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds |
+| `PI_USAGE_PROACTIVE` | `true` | Run startup and periodic network checks; set `false` for passive headers plus manual `/usage` only |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
