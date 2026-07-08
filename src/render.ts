@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, CopilotRateLimitWindow, CopilotUsage, OpenCodeGoUsage, UsageContext } from "./types.ts";
+import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, CopilotRateLimitWindow, CopilotUsage, OpenCodeGoUsage, SubscriptionUsage, UsageContext } from "./types.ts";
 import { ANTHROPIC_COLOR_MAP, ANTHROPIC_STATUS_TEXT } from "./anthropic.ts";
 import { COPILOT_COLOR_MAP, COPILOT_STATUS_TEXT } from "./copilot.ts";
 import { GO_COLOR_MAP, GO_STATUS_TEXT } from "./opencode-go.ts";
@@ -255,6 +255,52 @@ export function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, te
 	return lines;
 }
 
+// ───────── Rendering: Generic Subscription Providers ─────────
+
+export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
+	const lines: string[] = [];
+	const icon = statusIcon(subscription.status);
+	const color = GO_COLOR_MAP[subscription.status];
+
+	lines.push(fmt("dim", "─".repeat(40)));
+	lines.push(`${fmt(color, `${icon} ${subscription.label}`)} ${fmt("dim", "— " + GO_STATUS_TEXT[subscription.status])}`);
+
+	const windows = [
+		{ label: "rolling", window: subscription.rolling },
+		{ label: "week", window: subscription.weekly },
+		{ label: "month", window: subscription.monthly },
+	];
+	for (const { label, window } of windows) {
+		if (window?.usedPercent === undefined) continue;
+		const reset = window.resetAt
+			? ` resets ${formatResetTime(window.resetAt)}`
+			: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
+				? ` resets in ${formatDuration(window.resetAfterSeconds)}`
+				: "";
+		const remaining = window.remainingPercent !== undefined
+			? ` / ${window.remainingPercent.toFixed(0)}% left`
+			: "";
+		if (useColor) {
+			const windowColor = usageColor(window.usedPercent);
+			const windowBar = progressBar(window.usedPercent);
+			lines.push(`  ${label.padEnd(7)} ${fmt(windowColor, windowBar)} ${fmt(windowColor, `${window.usedPercent.toFixed(0)}% used`)}${fmt("dim", remaining + reset)}`);
+		} else {
+			lines.push(`  ${label.padEnd(7)} ${progressBar(window.usedPercent)} ${window.usedPercent.toFixed(0)}% used${remaining}${reset}`);
+		}
+	}
+
+	if ((subscription.status === "rate_limited" || subscription.status === "credits_error") && subscription.retryAfterSeconds && !windows.some(({ window }) => window?.usedPercent !== undefined)) {
+		lines.push(`  ${fmt("warning", `retry: ${formatDuration(subscription.retryAfterSeconds)}`)}`);
+	}
+	if (subscription.workingModel) lines.push(`  ${fmt("dim", `working: ${subscription.workingModel}`)}`);
+	if (subscription.checkedModels && subscription.totalModels) lines.push(`  ${fmt("dim", `checked: ${subscription.checkedModels}/${subscription.totalModels} ${subscription.shortLabel} models`)}`);
+	if (subscription.rateLimitedModel) lines.push(`  ${fmt("warning", `limited: ${subscription.rateLimitedModel}`)}`);
+	const error = subscription.errorMessage || subscription.error;
+	if (error) lines.push(`  ${fmt("dim", truncate(error, 80))}`);
+
+	return lines;
+}
+
 // ───────── Widget ─────────
 
 export function buildUsageWidget(
@@ -264,6 +310,7 @@ export function buildUsageWidget(
 	loading: boolean,
 	anthropic?: AnthropicUsage,
 	copilot?: CopilotUsage,
+	subscriptions: SubscriptionUsage[] = [],
 ): Text {
 	if (loading) {
 		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
@@ -302,6 +349,10 @@ export function buildUsageWidget(
 		lines.push(fmt("dim", "OpenCode Go — not configured"));
 	}
 
+	for (const subscription of subscriptions) {
+		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, true));
+	}
+
 	return new Text(lines.join("\n"), 0, 0);
 }
 
@@ -313,6 +364,7 @@ export function buildStartupUsageMessage(
 	includeHelp: boolean,
 	anthropic?: AnthropicUsage,
 	copilot?: CopilotUsage,
+	subscriptions: SubscriptionUsage[] = [],
 ): string {
 	const lines: string[] = [];
 	const fmt = (_color: ThemeColor, text: string) => text;
@@ -345,6 +397,10 @@ export function buildStartupUsageMessage(
 	} else {
 		lines.push("─".repeat(40));
 		lines.push("OpenCode Go — not configured");
+	}
+
+	for (const subscription of subscriptions) {
+		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, false));
 	}
 
 	if (includeHelp) {
@@ -406,6 +462,24 @@ function goFooterSummary(go: OpenCodeGoUsage, theme: Theme): string {
 	return quotaParts.length > 0 ? quotaParts.join(theme.fg("dim", ",")) : theme.fg("dim", statusIcon(go.status));
 }
 
+function subscriptionFooterSummary(subscription: SubscriptionUsage, theme: Theme): string {
+	const quotaParts: string[] = [];
+	if (subscription.rolling?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(subscription.rolling.usedPercent, theme, subscription.rolling.resetAt, subscription.rolling.resetAfterSeconds, "r"));
+	}
+	if (subscription.weekly?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(subscription.weekly.usedPercent, theme, subscription.weekly.resetAt, subscription.weekly.resetAfterSeconds, "w"));
+	}
+	if (subscription.monthly?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(subscription.monthly.usedPercent, theme, subscription.monthly.resetAt, subscription.monthly.resetAfterSeconds, "m"));
+	}
+	if (quotaParts.length > 0) return quotaParts.join(theme.fg("dim", ","));
+	if ((subscription.status === "rate_limited" || subscription.status === "credits_error") && subscription.retryAfterSeconds) {
+		return theme.fg("warning", `limited/${formatDuration(subscription.retryAfterSeconds)}`);
+	}
+	return theme.fg("dim", statusIcon(subscription.status));
+}
+
 function anthropicFooterSummary(anthropic: AnthropicUsage, theme: Theme): string {
 	const quotaParts: string[] = [];
 	if (anthropic.tokens?.usedPercent !== undefined) {
@@ -442,7 +516,14 @@ function copilotFooterSummary(copilot: CopilotUsage, theme: Theme): string {
 	return theme.fg("dim", statusIcon(copilot.status));
 }
 
-export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined, anthropic?: AnthropicUsage, copilot?: CopilotUsage): void {
+export function updateFooterStatus(
+	ctx: UsageContext,
+	codex: CodexUsage | undefined,
+	go: OpenCodeGoUsage | undefined,
+	anthropic?: AnthropicUsage,
+	copilot?: CopilotUsage,
+	subscriptions: SubscriptionUsage[] = [],
+): void {
 	if (!ctx.hasUI) return;
 
 	const theme = ctx.ui.theme;
@@ -463,6 +544,11 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 	if (goUsageHasData(go)) {
 		parts.push(`${dim("Go:")}${goFooterSummary(go, theme)}`);
 	}
+	for (const subscription of subscriptions) {
+		if (!subscriptionUsageHasData(subscription)) continue;
+		const limited = subscription.status === "rate_limited" || subscription.status === "credits_error" ? " limited" : "";
+		parts.push(`${dim(`${subscription.shortLabel}${limited}:`)}${subscriptionFooterSummary(subscription, theme)}`);
+	}
 	if (parts.length > 0) {
 		ctx.ui.setStatus("pi-usage", `${dim("⚡ ")}${parts.join(dim(" │ "))}`);
 	} else {
@@ -480,6 +566,10 @@ export function anthropicUsageHasData(anthropic: AnthropicUsage | undefined): an
 
 export function copilotUsageHasData(copilot: CopilotUsage | undefined): copilot is CopilotUsage {
 	return copilot !== undefined && copilot.status !== "no_key";
+}
+
+export function subscriptionUsageHasData(subscription: SubscriptionUsage | undefined): subscription is SubscriptionUsage {
+	return subscription !== undefined && subscription.status !== "no_key";
 }
 
 export function goUsageHasData(go: OpenCodeGoUsage | undefined): go is OpenCodeGoUsage {

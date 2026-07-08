@@ -1,7 +1,8 @@
 /**
  * pi-usage — Usage limit checker for pi coding agent
  *
- * Checks Codex, Anthropic, GitHub Copilot, and OpenCode Go usage limits at startup.
+ * Checks Codex, Anthropic, GitHub Copilot, OpenCode Go/Zen,
+ * and compatible subscription usage limits at startup.
  * Displays a startup report by default; persistent widget is opt-in.
  *
  * Also provides `/usage` command to refresh on demand.
@@ -12,10 +13,11 @@
  *   Copilot:      Uses OAuth token from pi's auth.json (same as github-copilot provider)
  *   OpenCode Go:  Uses OPENCODE_API_KEY for model probes, plus optional
  *                 OPENCODE_GO_WORKSPACE_ID + OPENCODE_GO_AUTH_COOKIE for quota
+ *   OpenCode Zen / compatible providers: Uses API keys from auth.json/env
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "./src/types.ts";
+import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, SubscriptionUsage, UsageContext } from "./src/types.ts";
 import {
 	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
@@ -36,6 +38,8 @@ import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodex
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
 import { getOpenCodeApiKey, checkOpenCodeGoUsage, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
+import { checkSubscriptionProviderUsage, getSubscriptionApiKey, parseSubscriptionUsageHeaders } from "./src/subscription-probe.ts";
+import { getSubscriptionProviderConfig, SUBSCRIPTION_PROVIDERS } from "./src/subscriptions.ts";
 import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
@@ -60,6 +64,7 @@ export default function (pi: ExtensionAPI) {
 	let anthropicUsage: AnthropicUsage | undefined;
 	let copilotUsage: CopilotUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
+	const subscriptionUsages = new Map<string, SubscriptionUsage>();
 	let isLoading = false;
 	let widgetLoading = false;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -76,6 +81,7 @@ export default function (pi: ExtensionAPI) {
 	let copilotPassiveAt = 0;
 	let goPassiveAt = 0;
 	let goPassiveQuotaAt = 0;
+	const subscriptionPassiveAt = new Map<string, number>();
 	let sessionGeneration = 0;
 
 	function unrefTimer(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
@@ -90,16 +96,23 @@ export default function (pi: ExtensionAPI) {
 		return readUsageWidgetSetting(ctx) ?? false;
 	}
 
+	function subscriptionUsageList(): SubscriptionUsage[] {
+		return SUBSCRIPTION_PROVIDERS
+			.map((config) => subscriptionUsages.get(config.provider))
+			.filter((usage): usage is SubscriptionUsage => usage !== undefined);
+	}
+
 	function renderCachedUsage(ctx: UsageContext, loading = false): void {
 		if (!ctx.hasUI) return;
+		const subscriptions = subscriptionUsageList();
 		if (isUsageWidgetEnabled(ctx)) {
 			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage, copilotUsage),
+				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage, copilotUsage, subscriptions),
 			);
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
-		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage, copilotUsage);
+		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage, copilotUsage, subscriptions);
 	}
 
 	function resetAtFromAfter(resetAt: number | undefined, resetAfterSeconds: number | undefined, nowSec: number): number | undefined {
@@ -139,6 +152,15 @@ export default function (pi: ExtensionAPI) {
 		const nowSec = Math.round(Date.now() / 1000);
 		if (usage.requests) usage.requests.resetAt = resetAtFromAfter(usage.requests.resetAt, usage.requests.resetAfterSeconds, nowSec);
 		if (usage.premiumRequests) usage.premiumRequests.resetAt = resetAtFromAfter(usage.premiumRequests.resetAt, usage.premiumRequests.resetAfterSeconds, nowSec);
+		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
+		return usage;
+	}
+
+	function normalizeSubscriptionResetTimes(usage: SubscriptionUsage): SubscriptionUsage {
+		const nowSec = Math.round(Date.now() / 1000);
+		if (usage.rolling) usage.rolling.resetAt = resetAtFromAfter(usage.rolling.resetAt, usage.rolling.resetAfterSeconds, nowSec);
+		if (usage.weekly) usage.weekly.resetAt = resetAtFromAfter(usage.weekly.resetAt, usage.weekly.resetAfterSeconds, nowSec);
+		if (usage.monthly) usage.monthly.resetAt = resetAtFromAfter(usage.monthly.resetAt, usage.monthly.resetAfterSeconds, nowSec);
 		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
 		return usage;
 	}
@@ -305,6 +327,27 @@ export default function (pi: ExtensionAPI) {
 				goUsage = undefined;
 			}
 
+			// Check other OpenAI/Anthropic-compatible subscription providers.
+			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
+				const skipSubscriptionCheck = trigger === "auto" && passiveUpdateIsFresh(subscriptionPassiveAt.get(providerConfig.provider) ?? 0);
+				if (skipSubscriptionCheck) continue;
+				const apiKey = getSubscriptionApiKey(providerConfig);
+				if (!apiKey) {
+					subscriptionUsages.delete(providerConfig.provider);
+					continue;
+				}
+				checks.push(
+					checkSubscriptionProviderUsage(providerConfig, apiKey, signal).then((result) => {
+						if (signal.aborted || generation !== sessionGeneration) return;
+						if (result.status === "no_key") {
+							subscriptionUsages.delete(providerConfig.provider);
+						} else {
+							subscriptionUsages.set(providerConfig.provider, normalizeSubscriptionResetTimes(result));
+						}
+					}),
+				);
+			}
+
 			// Run checks in parallel
 			await Promise.allSettled(checks);
 
@@ -322,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 				widgetLoading = false;
 				renderCachedUsage(ctx, false);
 				if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
-					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage, copilotUsage), "info");
+					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage, copilotUsage, subscriptionUsageList()), "info");
 				}
 			}
 		} finally {
@@ -455,6 +498,17 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		const subscriptionConfig = getSubscriptionProviderConfig(provider);
+		if (subscriptionConfig) {
+			const previous = subscriptionUsages.get(subscriptionConfig.provider);
+			const parsed = parseSubscriptionUsageHeaders(subscriptionConfig, event.headers, event.status, id, previous);
+			if (parsed) {
+				subscriptionUsages.set(subscriptionConfig.provider, normalizeSubscriptionResetTimes(parsed));
+				subscriptionPassiveAt.set(subscriptionConfig.provider, Date.now());
+				updated = true;
+			}
+		}
+
 		if (updated) {
 			widgetLoading = false;
 			renderCachedUsage(ctx, false);
@@ -516,7 +570,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── /usage command ──
 	pi.registerCommand("usage", {
-		description: "Refresh and show Codex, Anthropic, Copilot, and OpenCode Go usage limits",
+		description: "Refresh and show Codex, Anthropic, Copilot, OpenCode, and compatible subscription usage limits",
 		handler: async (_args, ctx) => {
 			await refreshUsage(ctx, "manual");
 		},
@@ -532,3 +586,4 @@ export { isAnthropicModelUnavailable, parseAnthropicResetAt, parseAnthropicUsage
 export { getCopilotBaseUrl, isCopilotModelUnavailable, isCopilotQuotaMessage, normalizeCopilotDomain, parseCopilotResetAt, parseCopilotUsageHeaders } from "./src/copilot.ts";
 export { footerResetDuration, footerUsageColor } from "./src/render.ts";
 export { isGlobalGoLimit, isPerModelUnavailable, parseOpenCodeGoUsageHeaders, resolveModelEndpoint } from "./src/opencode-go.ts";
+export { getSubscriptionApiKey, getSubscriptionCheckModels, isSubscriptionModelUnavailable, isSubscriptionQuotaMessage, parseSubscriptionUsageHeaders, resolveSubscriptionEndpoint } from "./src/subscription-probe.ts";

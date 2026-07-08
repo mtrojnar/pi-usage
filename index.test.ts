@@ -48,12 +48,14 @@ import {
 	footerResetDuration,
 	footerUsageColor,
 	goUsageHasData,
+	subscriptionUsageHasData,
 	buildStartupUsageMessage,
 	buildUsageWidget,
 	renderAnthropicWindows,
 	renderCodexWindows,
 	renderCopilotWindows,
 	renderGoWindows,
+	renderSubscriptionWindows,
 } from "./src/render.ts";
 import {
 	isAnthropicModelUnavailable,
@@ -76,10 +78,17 @@ import {
 	parseOpenCodeGoUsageWindow,
 	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
+import {
+	isSubscriptionModelUnavailable,
+	isSubscriptionQuotaMessage,
+	parseSubscriptionUsageHeaders,
+	resolveSubscriptionEndpoint,
+} from "./src/subscription-probe.ts";
 import type {
 	AnthropicUsage,
 	CopilotUsage,
 	OpenCodeGoUsage,
+	SubscriptionUsage,
 } from "./src/types.ts";
 
 // ───────── parseEnvInt ─────────
@@ -481,6 +490,31 @@ describe("resolveModelEndpoint", () => {
 	});
 });
 
+// ───────── resolveSubscriptionEndpoint ─────────
+
+describe("resolveSubscriptionEndpoint", () => {
+	it("appends Anthropic /v1/messages", () => {
+		assert.equal(
+			resolveSubscriptionEndpoint("https://api.example.com/root", "anthropic-messages"),
+			"https://api.example.com/root/v1/messages",
+		);
+	});
+
+	it("appends OpenAI chat completions without injecting v1 into nested base paths", () => {
+		assert.equal(
+			resolveSubscriptionEndpoint("https://api.z.ai/api/coding/paas/v4", "openai-completions"),
+			"https://api.z.ai/api/coding/paas/v4/chat/completions",
+		);
+	});
+
+	it("appends OpenAI responses endpoint", () => {
+		assert.equal(
+			resolveSubscriptionEndpoint("https://opencode.ai/zen/v1", "openai-responses"),
+			"https://opencode.ai/zen/v1/responses",
+		);
+	});
+});
+
 // ───────── resolveConfigValue ─────────
 
 describe("resolveConfigValue", () => {
@@ -768,6 +802,60 @@ describe("Copilot helpers", () => {
 	});
 });
 
+describe("parseSubscriptionUsageHeaders", () => {
+	const zenConfig = {
+		provider: "opencode",
+		label: "OpenCode Zen",
+		shortLabel: "Zen",
+		quotaHeaderPrefixes: ["opencode"],
+	};
+
+	it("parses generic subscription quota headers", () => {
+		const usage = parseSubscriptionUsageHeaders(zenConfig, {
+			"x-opencode-status": "available",
+			"x-opencode-model": "big-pickle",
+			"x-opencode-rolling-used-percent": "33",
+			"x-opencode-weekly-remaining-percent": "44",
+			"x-opencode-monthly-reset-after-seconds": "7200",
+		}, 200);
+
+		assert.ok(usage);
+		assert.equal(usage.provider, "opencode");
+		assert.equal(usage.status, "available");
+		assert.equal(usage.workingModel, "big-pickle");
+		assert.equal(usage.rolling?.usedPercent, 33);
+		assert.equal(usage.rolling?.remainingPercent, 67);
+		assert.equal(usage.weekly?.remainingPercent, 44);
+		assert.equal(usage.monthly?.resetAfterSeconds, 7200);
+	});
+
+	it("infers generic subscription rate limit from 429", () => {
+		const usage = parseSubscriptionUsageHeaders(zenConfig, { "retry-after": "20" }, 429, "big-pickle");
+		assert.ok(usage);
+		assert.equal(usage.status, "rate_limited");
+		assert.equal(usage.rateLimitedModel, "big-pickle");
+		assert.match(usage.errorMessage ?? "", /20s/);
+	});
+
+	it("returns undefined without a generic subscription signal", () => {
+		assert.equal(parseSubscriptionUsageHeaders(zenConfig, { server: "test" }, 200), undefined);
+	});
+});
+
+describe("generic subscription helpers", () => {
+	it("matches model unavailable messages", () => {
+		assert.equal(isSubscriptionModelUnavailable("model foo is not enabled"), true);
+		assert.equal(isSubscriptionModelUnavailable("unsupported model"), true);
+		assert.equal(isSubscriptionModelUnavailable("quota exceeded"), false);
+	});
+
+	it("matches quota messages", () => {
+		assert.equal(isSubscriptionQuotaMessage("subscription quota exceeded"), true);
+		assert.equal(isSubscriptionQuotaMessage("too many requests"), true);
+		assert.equal(isSubscriptionQuotaMessage("model not found"), false);
+	});
+});
+
 describe("parseOpenCodeGoUsageHeaders", () => {
 	it("parses passive Go quota headers", () => {
 		const usage = parseOpenCodeGoUsageHeaders({
@@ -1006,6 +1094,16 @@ describe("goUsageHasData", () => {
 
 	it("returns false for no_key", () => {
 		assert.equal(goUsageHasData({ status: "no_key" } as any), false);
+	});
+});
+
+describe("subscriptionUsageHasData", () => {
+	it("returns true for configured generic providers", () => {
+		assert.equal(subscriptionUsageHasData({ provider: "opencode", label: "OpenCode Zen", shortLabel: "Zen", available: true, status: "available" }), true);
+	});
+
+	it("returns false for no_key", () => {
+		assert.equal(subscriptionUsageHasData({ provider: "opencode", label: "OpenCode Zen", shortLabel: "Zen", available: false, status: "no_key" }), false);
 	});
 });
 
@@ -1415,6 +1513,48 @@ describe("renderGoWindows", () => {
 	});
 });
 
+// ───────── renderSubscriptionWindows ─────────
+
+describe("renderSubscriptionWindows", () => {
+	const identity = (_color: string, text: string) => text;
+
+	it("renders generic subscription quota windows", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "opencode",
+			label: "OpenCode Zen",
+			shortLabel: "Zen",
+			available: true,
+			status: "available",
+			workingModel: "big-pickle",
+			rolling: { usedPercent: 35, remainingPercent: 65, resetAfterSeconds: 3600 },
+			checkedModels: 1,
+			totalModels: 4,
+		};
+		const result = renderSubscriptionWindows(subscription, identity as any, false).join("\n");
+		assert.match(result, /OpenCode Zen/);
+		assert.match(result, /rolling/);
+		assert.match(result, /35%/);
+		assert.match(result, /big-pickle/);
+		assert.match(result, /1\/4/);
+	});
+
+	it("renders retry-only generic subscription rate limit", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "opencode",
+			label: "OpenCode Zen",
+			shortLabel: "Zen",
+			available: false,
+			status: "rate_limited",
+			rateLimitedModel: "big-pickle",
+			retryAfterSeconds: 30,
+		};
+		const result = renderSubscriptionWindows(subscription, identity as any, false).join("\n");
+		assert.match(result, /rate limited/);
+		assert.match(result, /retry: 30s/);
+		assert.match(result, /big-pickle/);
+	});
+});
+
 // ───────── buildUsageWidget ─────────
 
 describe("buildUsageWidget", () => {
@@ -1461,6 +1601,20 @@ describe("buildUsageWidget", () => {
 		assert.match(result.text, /not configured/);
 		assert.match(result.text, /Codex/);
 		assert.match(result.text, /OpenCode Go/);
+	});
+
+	it("renders generic subscription providers", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "opencode",
+			label: "OpenCode Zen",
+			shortLabel: "Zen",
+			available: true,
+			status: "available",
+			workingModel: "big-pickle",
+		};
+		const result = buildUsageWidget(undefined, undefined, mockTheme, false, undefined, undefined, [subscription]);
+		assert.match(result.text, /OpenCode Zen/);
+		assert.match(result.text, /big-pickle/);
 	});
 
 	it("shows partial services", () => {
@@ -1532,6 +1686,20 @@ describe("buildStartupUsageMessage", () => {
 		const result = buildStartupUsageMessage(undefined, undefined, false);
 		assert.match(result, /Codex.*not configured/);
 		assert.match(result, /OpenCode Go.*not configured/);
+	});
+
+	it("renders generic subscription providers", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "opencode",
+			label: "OpenCode Zen",
+			shortLabel: "Zen",
+			available: true,
+			status: "available",
+			workingModel: "big-pickle",
+		};
+		const result = buildStartupUsageMessage(undefined, undefined, false, undefined, undefined, [subscription]);
+		assert.match(result, /OpenCode Zen/);
+		assert.match(result, /big-pickle/);
 	});
 });
 

@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, and **OpenCode Go** usage limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
+Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -22,7 +22,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 
 - `PI_CODING_AGENT_DIR` support instead of assuming `~/.pi/agent`.
 - `limited` status in the footer and startup notification when Codex reports `rate_limited`.
-- Color-coded footer usage/reset chunks for Codex, Anthropic, GitHub Copilot, and OpenCode Go, with labels dimmed.
+- Color-coded footer usage/reset chunks for Codex, Anthropic, GitHub Copilot, OpenCode Go/Zen, and compatible subscription providers, with labels dimmed.
 - Configurable persistent widget display; default startup report includes enable instructions.
 - Safer config/model handling for falsy environment values and missing OpenCode Go model cost data.
 - Cancellation of unused response bodies to avoid stalled probe connections.
@@ -56,6 +56,12 @@ When pi starts up, **pi-usage** automatically:
    - Which specific model is working
    - Error details if credits are exhausted
    - How many documented Go models were checked before a result was found
+
+5. **OpenCode Zen and compatible subscriptions** — Uses a shared lightweight probe engine for OpenAI-compatible and Anthropic-compatible subscription providers. It currently supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. It shows:
+   - Whether a provider's models are **available** or **rate limited**
+   - Which low-cost model was checked
+   - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
+   - Error details for quota/auth/model failures
 
 By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
 
@@ -167,13 +173,31 @@ To find the values:
 
 The cookie is sensitive. Prefer environment variables or a `0600` local config file; do not commit it.
 
+### OpenCode Zen and compatible subscription providers
+
+OpenCode Zen (`opencode`) uses the same `OPENCODE_API_KEY` as OpenCode Go. If you store the key in `$PI_CODING_AGENT_DIR/auth.json` under `opencode`, pi-usage uses that first; it can also reuse an `opencode-go` stored key.
+
+Additional OpenAI/Anthropic-compatible subscription probes are enabled only when their keys are configured, so they do not add "not configured" sections by default:
+
+| Provider | pi provider id | Env var |
+|----------|----------------|---------|
+| OpenCode Zen | `opencode` | `OPENCODE_API_KEY` |
+| Kimi Coding | `kimi-coding` | `KIMI_API_KEY` |
+| Z.AI | `zai` | `ZAI_API_KEY` |
+| Z.AI Coding CN | `zai-coding-cn` | `ZAI_CODING_CN_API_KEY` |
+| Xiaomi Token Plan AMS | `xiaomi-token-plan-ams` | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` |
+| Xiaomi Token Plan CN | `xiaomi-token-plan-cn` | `XIAOMI_TOKEN_PLAN_CN_API_KEY` |
+| Xiaomi Token Plan SGP | `xiaomi-token-plan-sgp` | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` |
+
+These checks make minimal 1-token model requests and are skipped on auto-refresh when recent passive response data is available.
+
 ## Usage
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go/OpenCode Zen/compatible-provider status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
-By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Copilot`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
+By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Copilot`, `Go`, `Zen`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
 ```json
 {
@@ -222,15 +246,18 @@ Codex (plus) [premium]
   week    ████████░░░░░░░░░░░░ 40% used / 60% left resets 4.8d
   month   ████████████░░░░░░░░ 60% used / 40% left resets 12.4d
   working: glm-5.1
+────────────────────────────────────────
+✓ OpenCode Zen — available
+  working: big-pickle
 ```
 
 Footer status is compact, for example:
 
 ```
-⚡ Codex:17%/4.9h,42%/3.8d │ Claude:12%t/1m,4%r/1m │ Copilot:10%r/1h │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d
+⚡ Codex:17%/4.9h,42%/3.8d │ Claude:12%t/1m,4%r/1m │ Copilot:10%r/1h │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d │ Zen:✓
 ```
 
-Anthropic footer suffixes are `t` (tokens), `r` (requests), `i` (input tokens), and `o` (output tokens). Copilot footer suffixes are `p` (premium requests) and `r` (generic requests). OpenCode Go footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
+Anthropic footer suffixes are `t` (tokens), `r` (requests), `i` (input tokens), and `o` (output tokens). Copilot footer suffixes are `p` (premium requests) and `r` (generic requests). OpenCode Go and compatible-provider footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
 
 ## How It Works
 
@@ -297,6 +324,18 @@ It builds the probe list from OpenCode's documented Go models, then adds any ext
 
 During normal OpenCode Go model use, successful responses passively mark the current model as available, and `429` responses mark it as rate limited. If future OpenCode Go responses expose quota headers such as `x-opencode-go-rolling-used-percent`, those are parsed and used too. Dashboard scraping remains necessary for rolling/weekly/monthly quota percentages when those headers are absent.
 
+### OpenCode Zen and compatible subscription probes
+
+OpenCode Zen and the additional compatible providers share a generic probe engine extracted from the OpenCode Go model-probing logic. The engine:
+
+- Reads API keys from pi `auth.json` first, then provider-specific environment variables.
+- Builds a low-cost model list from documented fallbacks plus pi's installed model registry.
+- Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatible endpoints.
+- Sends a minimal 1-token request, stops on the first working model, and only tries another model when the error clearly says the model is unavailable.
+- Parses future/provider quota headers shaped like `x-<provider>-rolling-used-percent`, `x-<provider>-weekly-used-percent`, and `x-<provider>-monthly-reset-after-seconds`.
+
+During normal model use, successful compatible-provider responses passively mark that provider as available, and `429`/quota responses mark it as limited.
+
 ## Configuration
 
 Widget display uses pi-style extension config files:
@@ -319,7 +358,13 @@ Widget display uses pi-style extension config files:
 | `ANTHROPIC_OAUTH_TOKEN` | unset | Optional Anthropic OAuth token override for Claude Pro/Max checks |
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
 | `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
-| `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
+| `OPENCODE_API_KEY` | unset | OpenCode API key used for OpenCode Go and OpenCode Zen model availability probes |
+| `KIMI_API_KEY` | unset | Kimi Coding API key for compatible subscription probing |
+| `ZAI_API_KEY` | unset | Z.AI API key for compatible subscription probing |
+| `ZAI_CODING_CN_API_KEY` | unset | Z.AI Coding CN API key for compatible subscription probing |
+| `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | unset | Xiaomi Token Plan AMS API key for compatible subscription probing |
+| `XIAOMI_TOKEN_PLAN_CN_API_KEY` | unset | Xiaomi Token Plan CN API key for compatible subscription probing |
+| `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | unset | Xiaomi Token Plan SGP API key for compatible subscription probing |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
 | `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |
 | `OPENCODE_GO_QUOTA_CONFIG` | unset | Optional explicit path to an `opencode-go.json` quota config file |

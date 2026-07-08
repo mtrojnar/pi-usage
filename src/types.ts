@@ -26,8 +26,9 @@ export interface CodexUsage {
 }
 
 export type GoModelStatus = "available" | "rate_limited" | "credits_error" | "error" | "no_key";
-export type GoProbeApi = "openai-completions" | "anthropic-messages";
-export type CopilotProbeApi = "openai-completions" | "openai-responses" | "anthropic-messages";
+export type SubscriptionProbeApi = "openai-completions" | "openai-responses" | "anthropic-messages";
+export type GoProbeApi = Extract<SubscriptionProbeApi, "openai-completions" | "anthropic-messages">;
+export type CopilotProbeApi = SubscriptionProbeApi;
 
 export type AnthropicAuthType = "oauth" | "api_key";
 
@@ -57,11 +58,16 @@ export interface CopilotOAuthCredential extends CodexOAuthCredential {
 
 export type AuthJson = Record<string, AuthApiKeyCredential | CodexOAuthCredential | undefined>;
 
-export interface GoCheckModel {
+export interface SubscriptionProbeModel {
 	id: string;
-	api: GoProbeApi;
+	api: SubscriptionProbeApi;
 	endpoint: string;
 	costRank: number;
+	headers?: Record<string, string>;
+}
+
+export interface GoCheckModel extends SubscriptionProbeModel {
+	api: GoProbeApi;
 }
 
 export interface CopilotAuth {
@@ -154,6 +160,34 @@ export interface OpenCodeGoUsage {
 	monthlyResetAfterSeconds?: number;
 	monthlyResetAt?: number;
 	quotaError?: string;
+	errorMessage?: string;
+	error?: string;
+}
+
+export interface SubscriptionQuotaWindow {
+	usedPercent?: number;
+	remainingPercent?: number;
+	resetAfterSeconds?: number;
+	resetAt?: number;
+}
+
+export interface SubscriptionUsage {
+	provider: string;
+	label: string;
+	shortLabel: string;
+	available: boolean;
+	status: GoModelStatus;
+	workingModel?: string;
+	rateLimitedModel?: string;
+	checkedModels?: number;
+	totalModels?: number;
+	quotaSource?: string;
+	rolling?: SubscriptionQuotaWindow;
+	weekly?: SubscriptionQuotaWindow;
+	monthly?: SubscriptionQuotaWindow;
+	retryAfterSeconds?: number;
+	retryResetAt?: number;
+	source?: "probe" | "headers";
 	errorMessage?: string;
 	error?: string;
 }
