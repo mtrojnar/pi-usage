@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { CodexUsage, GoModelStatus, OpenCodeGoUsage, UsageContext } from "./types.ts";
+import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, OpenCodeGoUsage, UsageContext } from "./types.ts";
+import { ANTHROPIC_COLOR_MAP, ANTHROPIC_STATUS_TEXT } from "./anthropic.ts";
 import { GO_COLOR_MAP, GO_STATUS_TEXT } from "./opencode-go.ts";
 import { USAGE_CONFIG_FILE, USAGE_WIDGET_FLAG, USAGE_WIDGET_HELP } from "./config.ts";
 import {
@@ -84,6 +85,67 @@ export function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, t
 	return lines;
 }
 
+// ───────── Rendering: Anthropic Windows ─────────
+
+function renderAnthropicLimitWindow(
+	label: string,
+	window: AnthropicRateLimitWindow | undefined,
+	fmt: (color: ThemeColor, text: string) => string,
+	useColor: boolean,
+): string | undefined {
+	if (!window || window.usedPercent === undefined) return undefined;
+	const reset = window.resetAt
+		? ` resets ${formatResetTime(window.resetAt)}`
+		: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
+			? ` resets in ${formatDuration(window.resetAfterSeconds)}`
+			: "";
+	const remaining = window.remainingPercent !== undefined
+		? ` / ${window.remainingPercent.toFixed(0)}% left`
+		: "";
+	if (useColor) {
+		const windowColor = usageColor(window.usedPercent);
+		const windowBar = progressBar(window.usedPercent);
+		return `  ${label.padEnd(8)} ${fmt(windowColor, windowBar)} ${fmt(windowColor, `${window.usedPercent.toFixed(0)}% used`)}${fmt("dim", remaining + reset)}`;
+	}
+	return `  ${label.padEnd(8)} ${progressBar(window.usedPercent)} ${window.usedPercent.toFixed(0)}% used${remaining}${reset}`;
+}
+
+export function renderAnthropicWindows(anthropic: AnthropicUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
+	const lines: string[] = [];
+	const icon = statusIcon(anthropic.status);
+	const color = ANTHROPIC_COLOR_MAP[anthropic.status];
+	const authLabel = anthropic.authType === "oauth"
+		? "Claude Pro/Max"
+		: anthropic.authType === "api_key"
+			? "API"
+			: "Claude";
+
+	lines.push(fmt("dim", "─".repeat(40)));
+	lines.push(`${fmt(color, `${icon} Anthropic`)} ${fmt("dim", `(${authLabel}) — ${ANTHROPIC_STATUS_TEXT[anthropic.status]}`)}`);
+
+	const windows = [
+		{ label: "requests", window: anthropic.requests },
+		{ label: "tokens", window: anthropic.tokens },
+		{ label: "input", window: anthropic.inputTokens },
+		{ label: "output", window: anthropic.outputTokens },
+	];
+	for (const { label, window } of windows) {
+		const rendered = renderAnthropicLimitWindow(label, window, fmt, useColor);
+		if (rendered) lines.push(rendered);
+	}
+
+	if (anthropic.status === "rate_limited" && anthropic.retryAfterSeconds && !windows.some(({ window }) => window?.usedPercent !== undefined)) {
+		lines.push(`  ${fmt("warning", `retry: ${formatDuration(anthropic.retryAfterSeconds)}`)}`);
+	}
+	if (anthropic.workingModel) lines.push(`  ${fmt("dim", `working: ${anthropic.workingModel}`)}`);
+	if (anthropic.checkedModels && anthropic.totalModels) lines.push(`  ${fmt("dim", `checked: ${anthropic.checkedModels}/${anthropic.totalModels} Anthropic models`)}`);
+	if (anthropic.rateLimitedModel) lines.push(`  ${fmt("warning", `limited: ${anthropic.rateLimitedModel}`)}`);
+	const error = anthropic.errorMessage || anthropic.error;
+	if (error) lines.push(`  ${fmt("dim", truncate(error, 80))}`);
+
+	return lines;
+}
+
 // ───────── Rendering: Go Windows ─────────
 
 export function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
@@ -144,6 +206,7 @@ export function buildUsageWidget(
 	go: OpenCodeGoUsage | undefined,
 	theme: Theme,
 	loading: boolean,
+	anthropic?: AnthropicUsage,
 ): Text {
 	if (loading) {
 		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
@@ -159,6 +222,13 @@ export function buildUsageWidget(
 	} else {
 		lines.push(fmt("dim", "─".repeat(40)));
 		lines.push(fmt("dim", "Codex — not configured"));
+	}
+
+	if (anthropic) {
+		lines.push(...renderAnthropicWindows(anthropic, fmt, true));
+	} else {
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(fmt("dim", "Anthropic — not configured"));
 	}
 
 	if (go) {
@@ -177,6 +247,7 @@ export function buildStartupUsageMessage(
 	codex: CodexUsage | undefined,
 	go: OpenCodeGoUsage | undefined,
 	includeHelp: boolean,
+	anthropic?: AnthropicUsage,
 ): string {
 	const lines: string[] = [];
 	const fmt = (_color: ThemeColor, text: string) => text;
@@ -188,6 +259,13 @@ export function buildStartupUsageMessage(
 	} else {
 		lines.push("─".repeat(40));
 		lines.push("Codex — not configured");
+	}
+
+	if (anthropic) {
+		lines.push(...renderAnthropicWindows(anthropic, fmt, false));
+	} else {
+		lines.push("─".repeat(40));
+		lines.push("Anthropic — not configured");
 	}
 
 	if (go) {
@@ -256,7 +334,28 @@ function goFooterSummary(go: OpenCodeGoUsage, theme: Theme): string {
 	return quotaParts.length > 0 ? quotaParts.join(theme.fg("dim", ",")) : theme.fg("dim", statusIcon(go.status));
 }
 
-export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined): void {
+function anthropicFooterSummary(anthropic: AnthropicUsage, theme: Theme): string {
+	const quotaParts: string[] = [];
+	if (anthropic.tokens?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(anthropic.tokens.usedPercent, theme, anthropic.tokens.resetAt, anthropic.tokens.resetAfterSeconds, "t"));
+	}
+	if (anthropic.requests?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(anthropic.requests.usedPercent, theme, anthropic.requests.resetAt, anthropic.requests.resetAfterSeconds, "r"));
+	}
+	if (anthropic.inputTokens?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(anthropic.inputTokens.usedPercent, theme, anthropic.inputTokens.resetAt, anthropic.inputTokens.resetAfterSeconds, "i"));
+	}
+	if (anthropic.outputTokens?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(anthropic.outputTokens.usedPercent, theme, anthropic.outputTokens.resetAt, anthropic.outputTokens.resetAfterSeconds, "o"));
+	}
+	if (quotaParts.length > 0) return quotaParts.join(theme.fg("dim", ","));
+	if (anthropic.status === "rate_limited" && anthropic.retryAfterSeconds) {
+		return theme.fg("warning", `limited/${formatDuration(anthropic.retryAfterSeconds)}`);
+	}
+	return theme.fg("dim", statusIcon(anthropic.status));
+}
+
+export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined, anthropic?: AnthropicUsage): void {
 	if (!ctx.hasUI) return;
 
 	const theme = ctx.ui.theme;
@@ -265,6 +364,10 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 	if (codexUsageHasData(codex)) {
 		const limited = codex.activeLimit === "rate_limited" ? " limited" : "";
 		parts.push(`${dim(`Codex${limited}:`)}${codexFooterSummary(codex, theme)}`);
+	}
+	if (anthropicUsageHasData(anthropic)) {
+		const limited = anthropic.status === "rate_limited" ? " limited" : "";
+		parts.push(`${dim(`Claude${limited}:`)}${anthropicFooterSummary(anthropic, theme)}`);
 	}
 	if (goUsageHasData(go)) {
 		parts.push(`${dim("Go:")}${goFooterSummary(go, theme)}`);
@@ -278,6 +381,10 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 
 export function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage & { error: undefined } {
 	return codex !== undefined && codex.error === undefined && codex.activeLimit !== "error";
+}
+
+export function anthropicUsageHasData(anthropic: AnthropicUsage | undefined): anthropic is AnthropicUsage {
+	return anthropic !== undefined && anthropic.status !== "no_key";
 }
 
 export function goUsageHasData(go: OpenCodeGoUsage | undefined): go is OpenCodeGoUsage {

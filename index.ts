@@ -13,7 +13,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { CodexUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "./src/types.ts";
+import type { AnthropicUsage, CodexUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "./src/types.ts";
 import {
 	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
@@ -23,12 +23,14 @@ import {
 	USAGE_WIDGET_FLAG,
 	WIDGET_ID,
 	OPENAI_CODEX_PROVIDER,
+	ANTHROPIC_PROVIDER,
 	CODEX_RESPONSE_REFRESH_ENABLED,
 	CODEX_RESPONSE_REFRESH_SECONDS,
 	getOpenCodeGoQuotaConfig,
 	readUsageWidgetSetting,
 } from "./src/config.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
+import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getOpenCodeApiKey, checkOpenCodeGoUsage, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
 import {
 	buildStartupUsageMessage,
@@ -51,6 +53,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	let codexUsage: CodexUsage | undefined;
+	let anthropicUsage: AnthropicUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
 	let isLoading = false;
 	let widgetLoading = false;
@@ -64,6 +67,7 @@ export default function (pi: ExtensionAPI) {
 	let codexResponseCleanTicks = 0;
 	let codexUsageRequestAt = 0;
 	let codexPassiveAt = 0;
+	let anthropicPassiveAt = 0;
 	let goPassiveAt = 0;
 	let goPassiveQuotaAt = 0;
 	let sessionGeneration = 0;
@@ -84,12 +88,12 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		if (isUsageWidgetEnabled(ctx)) {
 			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-				buildUsageWidget(codexUsage, goUsage, theme, loading),
+				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage),
 			);
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
-		updateFooterStatus(ctx, codexUsage, goUsage);
+		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage);
 	}
 
 	function resetAtFromAfter(resetAt: number | undefined, resetAfterSeconds: number | undefined, nowSec: number): number | undefined {
@@ -112,6 +116,16 @@ export default function (pi: ExtensionAPI) {
 		usage.rollingResetAt = resetAtFromAfter(usage.rollingResetAt, usage.rollingResetAfterSeconds, nowSec);
 		usage.weeklyResetAt = resetAtFromAfter(usage.weeklyResetAt, usage.weeklyResetAfterSeconds, nowSec);
 		usage.monthlyResetAt = resetAtFromAfter(usage.monthlyResetAt, usage.monthlyResetAfterSeconds, nowSec);
+		return usage;
+	}
+
+	function normalizeAnthropicResetTimes(usage: AnthropicUsage): AnthropicUsage {
+		const nowSec = Math.round(Date.now() / 1000);
+		if (usage.requests) usage.requests.resetAt = resetAtFromAfter(usage.requests.resetAt, usage.requests.resetAfterSeconds, nowSec);
+		if (usage.tokens) usage.tokens.resetAt = resetAtFromAfter(usage.tokens.resetAt, usage.tokens.resetAfterSeconds, nowSec);
+		if (usage.inputTokens) usage.inputTokens.resetAt = resetAtFromAfter(usage.inputTokens.resetAt, usage.inputTokens.resetAfterSeconds, nowSec);
+		if (usage.outputTokens) usage.outputTokens.resetAt = resetAtFromAfter(usage.outputTokens.resetAt, usage.outputTokens.resetAfterSeconds, nowSec);
+		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
 		return usage;
 	}
 
@@ -234,6 +248,19 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
+			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
+			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(anthropicPassiveAt);
+			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth();
+			if (anthropicAuth) {
+				checks.push(
+					checkAnthropicUsage(anthropicAuth, signal).then((result) => {
+						if (!signal.aborted && generation === sessionGeneration) anthropicUsage = normalizeAnthropicResetTimes(result);
+					}),
+				);
+			} else if (!skipAnthropicCheck) {
+				anthropicUsage = undefined;
+			}
+
 			// Check OpenCode Go; passive model headers can defer probes, but dashboard quota still needs proactive fetches.
 			const goQuotaState = getOpenCodeGoQuotaConfig();
 			const skipGoCheck = trigger === "auto"
@@ -268,7 +295,7 @@ export default function (pi: ExtensionAPI) {
 				widgetLoading = false;
 				renderCachedUsage(ctx, false);
 				if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
-					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true), "info");
+					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage), "info");
 				}
 			}
 		} finally {
@@ -373,6 +400,15 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		if (provider === ANTHROPIC_PROVIDER) {
+			const parsed = parseAnthropicUsageHeaders(event.headers, event.status, id, anthropicUsage);
+			if (parsed) {
+				anthropicUsage = normalizeAnthropicResetTimes(parsed);
+				anthropicPassiveAt = Date.now();
+				updated = true;
+			}
+		}
+
 		if (provider === "opencode-go" || hasHeaderPrefix(event.headers, "x-opencode-go-")) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, id, goUsage);
 			if (parsed) {
@@ -456,5 +492,6 @@ export default function (pi: ExtensionAPI) {
 export { clampPercent, formatDuration, formatResetTime, parseHeaderBool, parseHeaderNumber, progressBar, statusIcon, truncate, usageColor } from "./src/format.ts";
 export { dedupe, parseBoolValue, parseEnvBool, parseEnvInt, resolveConfigValue } from "./src/config.ts";
 export { parseCodexUsageHeaders, windowMinutes, windowResetAfterSeconds, windowResetAt, windowUsedPercent } from "./src/codex.ts";
+export { isAnthropicModelUnavailable, parseAnthropicResetAt, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 export { footerResetDuration, footerUsageColor } from "./src/render.ts";
 export { isGlobalGoLimit, isPerModelUnavailable, parseOpenCodeGoUsageHeaders, resolveModelEndpoint } from "./src/opencode-go.ts";

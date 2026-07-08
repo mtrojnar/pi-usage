@@ -43,14 +43,21 @@ import {
 } from "./src/http.ts";
 import {
 	codexUsageHasData,
+	anthropicUsageHasData,
 	footerResetDuration,
 	footerUsageColor,
 	goUsageHasData,
 	buildStartupUsageMessage,
 	buildUsageWidget,
+	renderAnthropicWindows,
 	renderCodexWindows,
 	renderGoWindows,
 } from "./src/render.ts";
+import {
+	isAnthropicModelUnavailable,
+	parseAnthropicResetAt,
+	parseAnthropicUsageHeaders,
+} from "./src/anthropic.ts";
 import {
 	isGlobalGoLimit,
 	isPerModelUnavailable,
@@ -60,6 +67,7 @@ import {
 	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
 import type {
+	AnthropicUsage,
 	OpenCodeGoUsage,
 } from "./src/types.ts";
 
@@ -580,6 +588,80 @@ describe("parseCodexUsageHeaders", () => {
 	});
 });
 
+describe("parseAnthropicUsageHeaders", () => {
+	it("parses Anthropic rate-limit headers", () => {
+		const resetIso = new Date(Date.now() + 60_000).toISOString();
+		const usage = parseAnthropicUsageHeaders({
+			"anthropic-ratelimit-requests-limit": "100",
+			"anthropic-ratelimit-requests-remaining": "75",
+			"anthropic-ratelimit-requests-reset": resetIso,
+			"anthropic-ratelimit-tokens-limit": "1000",
+			"anthropic-ratelimit-tokens-remaining": "500",
+		}, 200, "claude-haiku-4-5");
+
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.workingModel, "claude-haiku-4-5");
+		assert.equal(usage.requests?.usedPercent, 25);
+		assert.equal(usage.requests?.remainingPercent, 75);
+		assert.ok((usage.requests?.resetAfterSeconds ?? 0) > 0);
+		assert.equal(usage.tokens?.usedPercent, 50);
+		assert.equal(usage.source, "headers");
+	});
+
+	it("infers Anthropic rate limit from 429 retry-after", () => {
+		const usage = parseAnthropicUsageHeaders({ "retry-after": "30" }, 429, "claude-sonnet-4-5");
+		assert.ok(usage);
+		assert.equal(usage.status, "rate_limited");
+		assert.equal(usage.rateLimitedModel, "claude-sonnet-4-5");
+		assert.equal(usage.retryAfterSeconds, 30);
+		assert.match(usage.errorMessage ?? "", /30s/);
+	});
+
+	it("preserves previous Anthropic quota on successful availability headers", () => {
+		const usage = parseAnthropicUsageHeaders({}, 200, "claude-haiku-4-5", {
+			available: false,
+			status: "rate_limited",
+			requests: { usedPercent: 90, remainingPercent: 10 },
+			retryAfterSeconds: 30,
+		});
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.requests?.usedPercent, 90);
+		assert.equal(usage.retryAfterSeconds, undefined);
+	});
+
+	it("returns undefined when no Anthropic signal is present", () => {
+		assert.equal(parseAnthropicUsageHeaders({ server: "test" }, 200), undefined);
+	});
+});
+
+describe("parseAnthropicResetAt", () => {
+	it("parses RFC3339 reset timestamps", () => {
+		const result = parseAnthropicResetAt("2030-01-01T00:00:00.000Z");
+		assert.equal(result, 1893456000);
+	});
+
+	it("parses unix seconds", () => {
+		assert.equal(parseAnthropicResetAt("2000000000"), 2000000000);
+	});
+
+	it("returns zero for invalid values", () => {
+		assert.equal(parseAnthropicResetAt("not-a-date"), 0);
+	});
+});
+
+describe("isAnthropicModelUnavailable", () => {
+	it("matches unavailable model messages", () => {
+		assert.equal(isAnthropicModelUnavailable("model claude-x not found"), true);
+		assert.equal(isAnthropicModelUnavailable("unsupported model"), true);
+	});
+
+	it("does not match rate-limit messages", () => {
+		assert.equal(isAnthropicModelUnavailable("rate limit exceeded"), false);
+	});
+});
+
 describe("parseOpenCodeGoUsageHeaders", () => {
 	it("parses passive Go quota headers", () => {
 		const usage = parseOpenCodeGoUsageHeaders({
@@ -758,6 +840,26 @@ describe("codexUsageHasData", () => {
 
 	it("returns false when activeLimit is error", () => {
 		assert.equal(codexUsageHasData({ activeLimit: "error", error: undefined } as any), false);
+	});
+});
+
+// ───────── anthropicUsageHasData ─────────
+
+describe("anthropicUsageHasData", () => {
+	it("returns true for available status", () => {
+		assert.equal(anthropicUsageHasData({ status: "available" } as any), true);
+	});
+
+	it("returns true for rate_limited", () => {
+		assert.equal(anthropicUsageHasData({ status: "rate_limited" } as any), true);
+	});
+
+	it("returns false for undefined", () => {
+		assert.equal(anthropicUsageHasData(undefined), false);
+	});
+
+	it("returns false for no_key", () => {
+		assert.equal(anthropicUsageHasData({ status: "no_key" } as any), false);
 	});
 });
 
@@ -994,6 +1096,58 @@ describe("renderCodexWindows", () => {
 			false,
 		);
 		assert.match(result.join("\n"), /rate_limited/);
+	});
+});
+
+// ───────── renderAnthropicWindows ─────────
+
+describe("renderAnthropicWindows", () => {
+	const identity = (_color: string, text: string) => text;
+
+	it("renders rate-limit windows", () => {
+		const anthropic: AnthropicUsage = {
+			available: true,
+			status: "available",
+			authType: "oauth",
+			workingModel: "claude-haiku-4-5",
+			requests: { usedPercent: 25, remainingPercent: 75, resetAfterSeconds: 60 },
+			tokens: { usedPercent: 50, remainingPercent: 50, resetAfterSeconds: 120 },
+		};
+		const result = renderAnthropicWindows(anthropic, identity as any, false);
+		const joined = result.join("\n");
+		assert.match(joined, /Anthropic/);
+		assert.match(joined, /Claude Pro\/Max/);
+		assert.match(joined, /requests/);
+		assert.match(joined, /tokens/);
+		assert.match(joined, /25%/);
+		assert.match(joined, /50%/);
+		assert.match(joined, /claude-haiku-4-5/);
+	});
+
+	it("renders retry-only rate limit", () => {
+		const anthropic: AnthropicUsage = {
+			available: false,
+			status: "rate_limited",
+			authType: "oauth",
+			rateLimitedModel: "claude-sonnet-4-5",
+			retryAfterSeconds: 30,
+			errorMessage: "Rate limited",
+		};
+		const result = renderAnthropicWindows(anthropic, identity as any, false).join("\n");
+		assert.match(result, /rate limited/);
+		assert.match(result, /retry: 30s/);
+		assert.match(result, /claude-sonnet-4-5/);
+	});
+
+	it("renders with color when useColor=true", () => {
+		const anthropic: AnthropicUsage = {
+			available: true,
+			status: "available",
+			requests: { usedPercent: 50, remainingPercent: 50 },
+		};
+		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
+		const result = renderAnthropicWindows(anthropic, colorFmt as any, true).join("\n");
+		assert.match(result, /\[success/);
 	});
 });
 

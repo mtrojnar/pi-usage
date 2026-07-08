@@ -28,6 +28,14 @@ export interface CodexUsage {
 export type GoModelStatus = "available" | "rate_limited" | "credits_error" | "error" | "no_key";
 export type GoProbeApi = "openai-completions" | "anthropic-messages";
 
+export type AnthropicAuthType = "oauth" | "api_key";
+
+export interface AnthropicAuth {
+	token: string;
+	type: AnthropicAuthType;
+	source: string;
+}
+
 export interface AuthApiKeyCredential {
 	type?: "api_key";
 	key?: string;
@@ -48,6 +56,36 @@ export interface GoCheckModel {
 	api: GoProbeApi;
 	endpoint: string;
 	costRank: number;
+}
+
+export interface AnthropicRateLimitWindow {
+	limit?: number;
+	remaining?: number;
+	usedPercent?: number;
+	remainingPercent?: number;
+	resetAfterSeconds?: number;
+	resetAt?: number;
+}
+
+export type AnthropicUsageWindowKey = "requests" | "tokens" | "inputTokens" | "outputTokens";
+
+export interface AnthropicUsage {
+	available: boolean;
+	status: GoModelStatus;
+	workingModel?: string;
+	rateLimitedModel?: string;
+	checkedModels?: number;
+	totalModels?: number;
+	authType?: AnthropicAuthType;
+	source?: "probe" | "headers";
+	requests?: AnthropicRateLimitWindow;
+	tokens?: AnthropicRateLimitWindow;
+	inputTokens?: AnthropicRateLimitWindow;
+	outputTokens?: AnthropicRateLimitWindow;
+	retryAfterSeconds?: number;
+	retryResetAt?: number;
+	errorMessage?: string;
+	error?: string;
 }
 
 export interface OpenCodeGoUsage {
