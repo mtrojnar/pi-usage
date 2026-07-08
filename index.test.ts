@@ -1722,10 +1722,11 @@ describe("buildStartupUsageMessage", () => {
 		assert.match(result, /OpenCode Go/);
 	});
 
-	it("shows not configured for missing services", () => {
+	it("omits unconfigured services instead of showing 'not configured'", () => {
 		const result = buildStartupUsageMessage(undefined, undefined, false);
-		assert.match(result, /Codex.*not configured/);
-		assert.match(result, /OpenCode Go.*not configured/);
+		assert.doesNotMatch(result, /not configured/);
+		assert.doesNotMatch(result, /Codex/);
+		assert.doesNotMatch(result, /OpenCode Go/);
 	});
 
 	it("renders generic subscription providers", () => {

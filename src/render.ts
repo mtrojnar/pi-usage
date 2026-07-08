@@ -307,7 +307,6 @@ interface UsageReportOptions {
 	fmt: (color: ThemeColor, text: string) => string;
 	bold: (text: string) => string;
 	useColor: boolean;
-	showUnconfigured: boolean;
 	helpLine?: string;
 }
 
@@ -319,28 +318,15 @@ function buildUsageReportLines(
 	subscriptions: SubscriptionUsage[],
 	opts: UsageReportOptions,
 ): string[] {
-	const { fmt, bold, useColor, showUnconfigured, helpLine } = opts;
+	const { fmt, bold, useColor, helpLine } = opts;
 	const lines: string[] = [];
-
-	const notConfigured = (label: string) => {
-		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(fmt("dim", `${label} — not configured`));
-	};
 
 	lines.push(bold(fmt("accent", "⚡ Usage Limits")));
 
 	if (codex) lines.push(...renderCodexWindows(codex, fmt, useColor));
-	else if (showUnconfigured) notConfigured("Codex");
-
 	if (anthropic) lines.push(...renderAnthropicWindows(anthropic, fmt, useColor));
-	else if (showUnconfigured) notConfigured("Anthropic");
-
 	if (copilot) lines.push(...renderCopilotWindows(copilot, fmt, useColor));
-	else if (showUnconfigured) notConfigured("GitHub Copilot");
-
 	if (go) lines.push(...renderGoWindows(go, fmt, useColor));
-	else if (showUnconfigured) notConfigured("OpenCode Go");
-
 	for (const subscription of subscriptions) {
 		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
 	}
@@ -372,7 +358,6 @@ export function buildUsageWidget(
 		fmt: (color, text) => theme.fg(color, text),
 		bold: (text) => theme.bold(text),
 		useColor: true,
-		showUnconfigured: false,
 	});
 
 	return new Text(lines.join("\n"), 0, 0);
@@ -392,7 +377,6 @@ export function buildStartupUsageMessage(
 		fmt: (_color, text) => text,
 		bold: (text) => text,
 		useColor: false,
-		showUnconfigured: true,
 		helpLine: includeHelp ? USAGE_WIDGET_HELP : undefined,
 	});
 

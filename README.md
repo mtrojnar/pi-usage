@@ -63,7 +63,7 @@ When pi starts up, **pi-usage** automatically:
    - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
    - Error details for quota/auth/model failures
 
-By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
+By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. Only configured providers are shown; unconfigured ones are omitted. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
 
 ## Installation
 
@@ -177,7 +177,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 OpenCode Zen (`opencode`) uses the same `OPENCODE_API_KEY` as OpenCode Go. If you store the key in `$PI_CODING_AGENT_DIR/auth.json` under `opencode`, pi-usage uses that first; it can also reuse an `opencode-go` stored key.
 
-Additional OpenAI/Anthropic-compatible subscription probes are enabled only when their keys are configured, so they do not add "not configured" sections by default:
+Additional OpenAI/Anthropic-compatible subscription probes are enabled only when their keys are configured. Unconfigured providers are simply omitted from both the startup report and the widget (no "not configured" rows):
 
 | Provider | pi provider id | Env var |
 |----------|----------------|---------|
