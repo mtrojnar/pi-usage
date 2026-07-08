@@ -57,6 +57,30 @@ export function resetAfterFromAt(resetAt: number | undefined): number | undefine
 	return Math.max(0, Math.round(resetAt - Date.now() / 1000));
 }
 
+export interface RetryResetFields {
+	retryAfterSeconds?: number;
+	retryResetAt?: number;
+}
+
+/** Retry countdown fields for a limited response, preserving prior values when no Retry-After is present. */
+export function retryResetFields(
+	limited: boolean,
+	retryAfterSeconds: number,
+	previous?: RetryResetFields,
+): RetryResetFields {
+	if (!limited) return { retryAfterSeconds: undefined, retryResetAt: undefined };
+	if (retryAfterSeconds > 0) {
+		return {
+			retryAfterSeconds,
+			retryResetAt: Math.round(Date.now() / 1000) + retryAfterSeconds,
+		};
+	}
+	return {
+		retryAfterSeconds: previous?.retryAfterSeconds,
+		retryResetAt: previous?.retryResetAt,
+	};
+}
+
 /** Collect fetch Response headers into a plain record. */
 export function responseHeadersToRecord(response: Response): Record<string, string> {
 	const headers: Record<string, string> = {};

@@ -55,13 +55,15 @@ const COPILOT_STATUS_TEXT: Record<GoModelStatus, string> = {
 
 // ───────── Shared Line Builders ─────────
 
+function resetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
+	if (resetAt !== undefined && resetAt > 0) return formatResetTime(resetAt);
+	if (resetAfterSeconds !== undefined && resetAfterSeconds > 0) return formatDuration(resetAfterSeconds);
+	return undefined;
+}
+
 /** Consistent " resets in <duration>" / " resets now" suffix from a reset timestamp or countdown. */
 export function resetPhrase(resetAt?: number, resetAfterSeconds?: number): string {
-	const duration = resetAt !== undefined && resetAt > 0
-		? formatResetTime(resetAt)
-		: resetAfterSeconds !== undefined && resetAfterSeconds > 0
-			? formatDuration(resetAfterSeconds)
-			: undefined;
+	const duration = resetDuration(resetAt, resetAfterSeconds);
 	if (!duration) return "";
 	return duration === "now" ? " resets now" : ` resets in ${duration}`;
 }
@@ -334,9 +336,7 @@ export function buildStartupUsageMessage(
 // ───────── Status Line ─────────
 
 export function footerResetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
-	if (resetAt !== undefined && resetAt > 0) return formatResetTime(resetAt);
-	if (resetAfterSeconds !== undefined && resetAfterSeconds > 0) return formatDuration(resetAfterSeconds);
-	return undefined;
+	return resetDuration(resetAt, resetAfterSeconds);
 }
 
 export function footerUsageColor(usedPercent: number): "dim" | "accent" | "warning" | "error" {

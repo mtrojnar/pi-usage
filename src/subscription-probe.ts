@@ -14,6 +14,7 @@ import {
 	parseOptionalNumber,
 	parseResetAtSeconds,
 	parseRetryAfterSeconds,
+	retryResetFields,
 } from "./headers.ts";
 import {
 	asProbeApi,
@@ -182,7 +183,6 @@ export function parseSubscriptionUsageHeaders(
 					: "available");
 	const available = inferredStatus === "available";
 	const limited = inferredStatus === "rate_limited" || inferredStatus === "credits_error";
-	const nowSec = Math.round(Date.now() / 1000);
 
 	return {
 		provider: config.provider,
@@ -198,12 +198,7 @@ export function parseSubscriptionUsageHeaders(
 		rolling: rolling.window ?? previous?.rolling,
 		weekly: weekly.window ?? previous?.weekly,
 		monthly: monthly.window ?? previous?.monthly,
-		retryAfterSeconds: limited
-			? retryAfterSeconds > 0 ? retryAfterSeconds : previous?.retryAfterSeconds
-			: undefined,
-		retryResetAt: limited
-			? retryAfterSeconds > 0 ? nowSec + retryAfterSeconds : previous?.retryResetAt
-			: undefined,
+		...retryResetFields(limited, retryAfterSeconds, previous),
 		source: "headers",
 		errorMessage: limited
 			? retryAfterSeconds > 0

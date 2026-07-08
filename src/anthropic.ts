@@ -18,6 +18,7 @@ import {
 	parseOptionalNumber,
 	parseRetryAfterSeconds,
 	resetAfterFromAt,
+	retryResetFields,
 } from "./headers.ts";
 import { fetchWithTimeout, piUsageUserAgent, readErrorDetail, readResponseJson } from "./http.ts";
 import {
@@ -128,17 +129,18 @@ export function parseAnthropicUsageHeaders(
 	const hasSignal = hasUnified || status === 429 || (status >= 200 && status < 300 && !!modelId);
 	if (!hasSignal) return undefined;
 
-	const fiveHour = parseUnifiedWindow(headers, "5h") ?? previous?.fiveHour;
-	const weekly = parseUnifiedWindow(headers, "7d") ?? previous?.weekly;
+	const parsedFiveHour = parseUnifiedWindow(headers, "5h");
+	const parsedWeekly = parseUnifiedWindow(headers, "7d");
+	const fiveHour = parsedFiveHour ?? previous?.fiveHour;
+	const weekly = parsedWeekly ?? previous?.weekly;
 	const overall = headerValue(headers, "anthropic-ratelimit-unified-status");
 	const rejected = status === 429 || overall === "rejected"
-		|| parseUnifiedWindow(headers, "5h")?.status === "rejected"
-		|| parseUnifiedWindow(headers, "7d")?.status === "rejected";
+		|| parsedFiveHour?.status === "rejected"
+		|| parsedWeekly?.status === "rejected";
 
 	const inferredStatus: GoModelStatus = rejected ? "rate_limited" : status >= 400 ? "error" : "available";
 	const available = inferredStatus === "available";
 	const rateLimited = inferredStatus === "rate_limited";
-	const nowSec = Math.round(Date.now() / 1000);
 
 	return {
 		available,
@@ -151,12 +153,7 @@ export function parseAnthropicUsageHeaders(
 		rateLimitedModel: rateLimited ? modelId ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
 		checkedModels: previous?.checkedModels,
 		totalModels: previous?.totalModels,
-		retryAfterSeconds: rateLimited
-			? retryAfterSeconds > 0 ? retryAfterSeconds : previous?.retryAfterSeconds
-			: undefined,
-		retryResetAt: rateLimited
-			? retryAfterSeconds > 0 ? nowSec + retryAfterSeconds : previous?.retryResetAt
-			: undefined,
+		...retryResetFields(rateLimited, retryAfterSeconds, previous),
 		errorMessage: rateLimited
 			? retryAfterSeconds > 0 ? `Rate limited; retry after ${retryAfterSeconds}s` : "Rate limited"
 			: inferredStatus === "error"

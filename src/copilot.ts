@@ -21,6 +21,7 @@ import {
 	parseResetAtSeconds,
 	parseRetryAfterSeconds,
 	resetAfterFromAt,
+	retryResetFields,
 } from "./headers.ts";
 import {
 	asProbeApi,
@@ -195,7 +196,6 @@ export function parseCopilotUsageHeaders(
 				: "available";
 	const available = inferredStatus === "available";
 	const rateLimited = inferredStatus === "rate_limited" || inferredStatus === "credits_error";
-	const nowSec = Math.round(Date.now() / 1000);
 
 	const usage: CopilotUsage = {
 		available,
@@ -206,12 +206,7 @@ export function parseCopilotUsageHeaders(
 		totalModels: previous?.totalModels,
 		availableModels: previous?.availableModels,
 		source: "headers",
-		retryAfterSeconds: rateLimited
-			? retryAfterSeconds > 0 ? retryAfterSeconds : previous?.retryAfterSeconds
-			: undefined,
-		retryResetAt: rateLimited
-			? retryAfterSeconds > 0 ? nowSec + retryAfterSeconds : previous?.retryResetAt
-			: undefined,
+		...retryResetFields(rateLimited, retryAfterSeconds, previous),
 		errorMessage: rateLimited
 			? retryAfterSeconds > 0
 				? `Rate limited; retry after ${retryAfterSeconds}s`
