@@ -44,6 +44,7 @@ import {
 import {
 	codexUsageHasData,
 	anthropicUsageHasData,
+	copilotUsageHasData,
 	footerResetDuration,
 	footerUsageColor,
 	goUsageHasData,
@@ -51,6 +52,7 @@ import {
 	buildUsageWidget,
 	renderAnthropicWindows,
 	renderCodexWindows,
+	renderCopilotWindows,
 	renderGoWindows,
 } from "./src/render.ts";
 import {
@@ -58,6 +60,14 @@ import {
 	parseAnthropicResetAt,
 	parseAnthropicUsageHeaders,
 } from "./src/anthropic.ts";
+import {
+	getCopilotBaseUrl,
+	isCopilotModelUnavailable,
+	isCopilotQuotaMessage,
+	normalizeCopilotDomain,
+	parseCopilotResetAt,
+	parseCopilotUsageHeaders,
+} from "./src/copilot.ts";
 import {
 	isGlobalGoLimit,
 	isPerModelUnavailable,
@@ -68,6 +78,7 @@ import {
 } from "./src/opencode-go.ts";
 import type {
 	AnthropicUsage,
+	CopilotUsage,
 	OpenCodeGoUsage,
 } from "./src/types.ts";
 
@@ -662,6 +673,101 @@ describe("isAnthropicModelUnavailable", () => {
 	});
 });
 
+describe("parseCopilotUsageHeaders", () => {
+	it("parses generic Copilot rate-limit headers", () => {
+		const reset = Math.round(Date.now() / 1000) + 60;
+		const usage = parseCopilotUsageHeaders({
+			"x-ratelimit-limit": "100",
+			"x-ratelimit-remaining": "80",
+			"x-ratelimit-used": "20",
+			"x-ratelimit-reset": String(reset),
+			"x-ratelimit-resource": "copilot",
+		}, 200, "gpt-5-mini");
+
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.workingModel, "gpt-5-mini");
+		assert.equal(usage.requests?.usedPercent, 20);
+		assert.equal(usage.requests?.remainingPercent, 80);
+		assert.equal(usage.requests?.resource, "copilot");
+		assert.ok((usage.requests?.resetAfterSeconds ?? 0) > 0);
+	});
+
+	it("parses future Copilot premium request headers", () => {
+		const usage = parseCopilotUsageHeaders({
+			"x-copilot-premium-requests-used-percent": "40",
+			"x-copilot-premium-requests-remaining-percent": "60",
+			"x-copilot-premium-requests-reset-after-seconds": "120",
+		}, 200, "gpt-5-mini");
+
+		assert.ok(usage);
+		assert.equal(usage.premiumRequests?.usedPercent, 40);
+		assert.equal(usage.premiumRequests?.remainingPercent, 60);
+		assert.equal(usage.premiumRequests?.resetAfterSeconds, 120);
+	});
+
+	it("infers Copilot rate limit from 429 retry-after", () => {
+		const usage = parseCopilotUsageHeaders({ "retry-after": "45" }, 429, "gpt-5-mini");
+		assert.ok(usage);
+		assert.equal(usage.status, "rate_limited");
+		assert.equal(usage.rateLimitedModel, "gpt-5-mini");
+		assert.equal(usage.retryAfterSeconds, 45);
+		assert.match(usage.errorMessage ?? "", /45s/);
+	});
+
+	it("preserves previous Copilot quota on successful availability headers", () => {
+		const usage = parseCopilotUsageHeaders({}, 200, "gpt-5-mini", {
+			available: false,
+			status: "rate_limited",
+			premiumRequests: { usedPercent: 70, remainingPercent: 30 },
+			retryAfterSeconds: 30,
+		});
+		assert.ok(usage);
+		assert.equal(usage.status, "available");
+		assert.equal(usage.premiumRequests?.usedPercent, 70);
+		assert.equal(usage.retryAfterSeconds, undefined);
+	});
+
+	it("returns undefined when no Copilot signal is present", () => {
+		assert.equal(parseCopilotUsageHeaders({ server: "test" }, 200), undefined);
+	});
+});
+
+describe("parseCopilotResetAt", () => {
+	it("parses unix seconds", () => {
+		assert.equal(parseCopilotResetAt("2000000000"), 2000000000);
+	});
+
+	it("parses unix milliseconds", () => {
+		assert.equal(parseCopilotResetAt("2000000000000"), 2000000000);
+	});
+
+	it("parses date strings", () => {
+		assert.equal(parseCopilotResetAt("2030-01-01T00:00:00.000Z"), 1893456000);
+	});
+});
+
+describe("Copilot helpers", () => {
+	it("normalizes enterprise domains", () => {
+		assert.equal(normalizeCopilotDomain("https://company.ghe.com/path"), "company.ghe.com");
+		assert.equal(normalizeCopilotDomain("company.ghe.com"), "company.ghe.com");
+	});
+
+	it("extracts base URL from Copilot token proxy endpoint", () => {
+		assert.equal(getCopilotBaseUrl("tid=x;proxy-ep=proxy.enterprise.githubcopilot.com;exp=1"), "https://api.enterprise.githubcopilot.com");
+	});
+
+	it("falls back to enterprise base URL", () => {
+		assert.equal(getCopilotBaseUrl("token", "company.ghe.com"), "https://copilot-api.company.ghe.com");
+	});
+
+	it("matches unavailable and quota messages", () => {
+		assert.equal(isCopilotModelUnavailable("model gpt-x not found"), true);
+		assert.equal(isCopilotQuotaMessage("premium requests quota exceeded"), true);
+		assert.equal(isCopilotQuotaMessage("model not found"), false);
+	});
+});
+
 describe("parseOpenCodeGoUsageHeaders", () => {
 	it("parses passive Go quota headers", () => {
 		const usage = parseOpenCodeGoUsageHeaders({
@@ -860,6 +966,26 @@ describe("anthropicUsageHasData", () => {
 
 	it("returns false for no_key", () => {
 		assert.equal(anthropicUsageHasData({ status: "no_key" } as any), false);
+	});
+});
+
+// ───────── copilotUsageHasData ─────────
+
+describe("copilotUsageHasData", () => {
+	it("returns true for available status", () => {
+		assert.equal(copilotUsageHasData({ status: "available" } as any), true);
+	});
+
+	it("returns true for rate_limited", () => {
+		assert.equal(copilotUsageHasData({ status: "rate_limited" } as any), true);
+	});
+
+	it("returns false for undefined", () => {
+		assert.equal(copilotUsageHasData(undefined), false);
+	});
+
+	it("returns false for no_key", () => {
+		assert.equal(copilotUsageHasData({ status: "no_key" } as any), false);
 	});
 });
 
@@ -1147,6 +1273,55 @@ describe("renderAnthropicWindows", () => {
 		};
 		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
 		const result = renderAnthropicWindows(anthropic, colorFmt as any, true).join("\n");
+		assert.match(result, /\[success/);
+	});
+});
+
+// ───────── renderCopilotWindows ─────────
+
+describe("renderCopilotWindows", () => {
+	const identity = (_color: string, text: string) => text;
+
+	it("renders Copilot quota windows", () => {
+		const copilot: CopilotUsage = {
+			available: true,
+			status: "available",
+			workingModel: "gpt-5-mini",
+			premiumRequests: { usedPercent: 40, remainingPercent: 60, resetAfterSeconds: 120 },
+			requests: { usedPercent: 10, remainingPercent: 90, resetAfterSeconds: 60 },
+			availableModels: 12,
+		};
+		const result = renderCopilotWindows(copilot, identity as any, false).join("\n");
+		assert.match(result, /GitHub Copilot/);
+		assert.match(result, /premium/);
+		assert.match(result, /requests/);
+		assert.match(result, /40%/);
+		assert.match(result, /gpt-5-mini/);
+		assert.match(result, /12 account models/);
+	});
+
+	it("renders retry-only rate limit", () => {
+		const copilot: CopilotUsage = {
+			available: false,
+			status: "rate_limited",
+			rateLimitedModel: "gpt-5-mini",
+			retryAfterSeconds: 45,
+			errorMessage: "Rate limited",
+		};
+		const result = renderCopilotWindows(copilot, identity as any, false).join("\n");
+		assert.match(result, /rate limited/);
+		assert.match(result, /retry: 45s/);
+		assert.match(result, /gpt-5-mini/);
+	});
+
+	it("renders with color when useColor=true", () => {
+		const copilot: CopilotUsage = {
+			available: true,
+			status: "available",
+			requests: { usedPercent: 50, remainingPercent: 50 },
+		};
+		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
+		const result = renderCopilotWindows(copilot, colorFmt as any, true).join("\n");
 		assert.match(result, /\[success/);
 	});
 });

@@ -1,8 +1,9 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, OpenCodeGoUsage, UsageContext } from "./types.ts";
+import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, CopilotRateLimitWindow, CopilotUsage, OpenCodeGoUsage, UsageContext } from "./types.ts";
 import { ANTHROPIC_COLOR_MAP, ANTHROPIC_STATUS_TEXT } from "./anthropic.ts";
+import { COPILOT_COLOR_MAP, COPILOT_STATUS_TEXT } from "./copilot.ts";
 import { GO_COLOR_MAP, GO_STATUS_TEXT } from "./opencode-go.ts";
 import { USAGE_CONFIG_FILE, USAGE_WIDGET_FLAG, USAGE_WIDGET_HELP } from "./config.ts";
 import {
@@ -146,6 +147,61 @@ export function renderAnthropicWindows(anthropic: AnthropicUsage, fmt: (color: T
 	return lines;
 }
 
+// ───────── Rendering: GitHub Copilot Windows ─────────
+
+function renderCopilotLimitWindow(
+	label: string,
+	window: CopilotRateLimitWindow | undefined,
+	fmt: (color: ThemeColor, text: string) => string,
+	useColor: boolean,
+): string | undefined {
+	if (!window || window.usedPercent === undefined) return undefined;
+	const reset = window.resetAt
+		? ` resets ${formatResetTime(window.resetAt)}`
+		: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
+			? ` resets in ${formatDuration(window.resetAfterSeconds)}`
+			: "";
+	const remaining = window.remainingPercent !== undefined
+		? ` / ${window.remainingPercent.toFixed(0)}% left`
+		: "";
+	if (useColor) {
+		const windowColor = usageColor(window.usedPercent);
+		const windowBar = progressBar(window.usedPercent);
+		return `  ${label.padEnd(8)} ${fmt(windowColor, windowBar)} ${fmt(windowColor, `${window.usedPercent.toFixed(0)}% used`)}${fmt("dim", remaining + reset)}`;
+	}
+	return `  ${label.padEnd(8)} ${progressBar(window.usedPercent)} ${window.usedPercent.toFixed(0)}% used${remaining}${reset}`;
+}
+
+export function renderCopilotWindows(copilot: CopilotUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
+	const lines: string[] = [];
+	const icon = statusIcon(copilot.status);
+	const color = COPILOT_COLOR_MAP[copilot.status];
+
+	lines.push(fmt("dim", "─".repeat(40)));
+	lines.push(`${fmt(color, `${icon} GitHub Copilot`)} ${fmt("dim", "— " + COPILOT_STATUS_TEXT[copilot.status])}`);
+
+	const windows = [
+		{ label: "premium", window: copilot.premiumRequests },
+		{ label: "requests", window: copilot.requests },
+	];
+	for (const { label, window } of windows) {
+		const rendered = renderCopilotLimitWindow(label, window, fmt, useColor);
+		if (rendered) lines.push(rendered);
+	}
+
+	if ((copilot.status === "rate_limited" || copilot.status === "credits_error") && copilot.retryAfterSeconds && !windows.some(({ window }) => window?.usedPercent !== undefined)) {
+		lines.push(`  ${fmt("warning", `retry: ${formatDuration(copilot.retryAfterSeconds)}`)}`);
+	}
+	if (copilot.workingModel) lines.push(`  ${fmt("dim", `working: ${copilot.workingModel}`)}`);
+	if (copilot.checkedModels && copilot.totalModels) lines.push(`  ${fmt("dim", `checked: ${copilot.checkedModels}/${copilot.totalModels} Copilot models`)}`);
+	if (copilot.availableModels) lines.push(`  ${fmt("dim", `available: ${copilot.availableModels} account models`)}`);
+	if (copilot.rateLimitedModel) lines.push(`  ${fmt("warning", `limited: ${copilot.rateLimitedModel}`)}`);
+	const error = copilot.errorMessage || copilot.error;
+	if (error) lines.push(`  ${fmt("dim", truncate(error, 80))}`);
+
+	return lines;
+}
+
 // ───────── Rendering: Go Windows ─────────
 
 export function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
@@ -207,6 +263,7 @@ export function buildUsageWidget(
 	theme: Theme,
 	loading: boolean,
 	anthropic?: AnthropicUsage,
+	copilot?: CopilotUsage,
 ): Text {
 	if (loading) {
 		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
@@ -231,6 +288,13 @@ export function buildUsageWidget(
 		lines.push(fmt("dim", "Anthropic — not configured"));
 	}
 
+	if (copilot) {
+		lines.push(...renderCopilotWindows(copilot, fmt, true));
+	} else {
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(fmt("dim", "GitHub Copilot — not configured"));
+	}
+
 	if (go) {
 		lines.push(...renderGoWindows(go, fmt, true));
 	} else {
@@ -248,6 +312,7 @@ export function buildStartupUsageMessage(
 	go: OpenCodeGoUsage | undefined,
 	includeHelp: boolean,
 	anthropic?: AnthropicUsage,
+	copilot?: CopilotUsage,
 ): string {
 	const lines: string[] = [];
 	const fmt = (_color: ThemeColor, text: string) => text;
@@ -266,6 +331,13 @@ export function buildStartupUsageMessage(
 	} else {
 		lines.push("─".repeat(40));
 		lines.push("Anthropic — not configured");
+	}
+
+	if (copilot) {
+		lines.push(...renderCopilotWindows(copilot, fmt, false));
+	} else {
+		lines.push("─".repeat(40));
+		lines.push("GitHub Copilot — not configured");
 	}
 
 	if (go) {
@@ -355,7 +427,22 @@ function anthropicFooterSummary(anthropic: AnthropicUsage, theme: Theme): string
 	return theme.fg("dim", statusIcon(anthropic.status));
 }
 
-export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined, anthropic?: AnthropicUsage): void {
+function copilotFooterSummary(copilot: CopilotUsage, theme: Theme): string {
+	const quotaParts: string[] = [];
+	if (copilot.premiumRequests?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(copilot.premiumRequests.usedPercent, theme, copilot.premiumRequests.resetAt, copilot.premiumRequests.resetAfterSeconds, "p"));
+	}
+	if (copilot.requests?.usedPercent !== undefined) {
+		quotaParts.push(footerWindowSummary(copilot.requests.usedPercent, theme, copilot.requests.resetAt, copilot.requests.resetAfterSeconds, "r"));
+	}
+	if (quotaParts.length > 0) return quotaParts.join(theme.fg("dim", ","));
+	if ((copilot.status === "rate_limited" || copilot.status === "credits_error") && copilot.retryAfterSeconds) {
+		return theme.fg("warning", `limited/${formatDuration(copilot.retryAfterSeconds)}`);
+	}
+	return theme.fg("dim", statusIcon(copilot.status));
+}
+
+export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefined, go: OpenCodeGoUsage | undefined, anthropic?: AnthropicUsage, copilot?: CopilotUsage): void {
 	if (!ctx.hasUI) return;
 
 	const theme = ctx.ui.theme;
@@ -368,6 +455,10 @@ export function updateFooterStatus(ctx: UsageContext, codex: CodexUsage | undefi
 	if (anthropicUsageHasData(anthropic)) {
 		const limited = anthropic.status === "rate_limited" ? " limited" : "";
 		parts.push(`${dim(`Claude${limited}:`)}${anthropicFooterSummary(anthropic, theme)}`);
+	}
+	if (copilotUsageHasData(copilot)) {
+		const limited = copilot.status === "rate_limited" || copilot.status === "credits_error" ? " limited" : "";
+		parts.push(`${dim(`Copilot${limited}:`)}${copilotFooterSummary(copilot, theme)}`);
 	}
 	if (goUsageHasData(go)) {
 		parts.push(`${dim("Go:")}${goFooterSummary(go, theme)}`);
@@ -385,6 +476,10 @@ export function codexUsageHasData(codex: CodexUsage | undefined): codex is Codex
 
 export function anthropicUsageHasData(anthropic: AnthropicUsage | undefined): anthropic is AnthropicUsage {
 	return anthropic !== undefined && anthropic.status !== "no_key";
+}
+
+export function copilotUsageHasData(copilot: CopilotUsage | undefined): copilot is CopilotUsage {
+	return copilot !== undefined && copilot.status !== "no_key";
 }
 
 export function goUsageHasData(go: OpenCodeGoUsage | undefined): go is OpenCodeGoUsage {

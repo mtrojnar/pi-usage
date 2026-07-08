@@ -1,19 +1,21 @@
 /**
  * pi-usage — Usage limit checker for pi coding agent
  *
- * Checks Codex (5hr & weekly) and OpenCode Go usage limits at startup.
+ * Checks Codex, Anthropic, GitHub Copilot, and OpenCode Go usage limits at startup.
  * Displays a startup report by default; persistent widget is opt-in.
  *
  * Also provides `/usage` command to refresh on demand.
  *
  * Setup:
  *   Codex:        Uses OAuth token from pi's auth.json (same as openai-codex provider)
+ *   Anthropic:    Uses OAuth token/API key from pi's auth.json or env
+ *   Copilot:      Uses OAuth token from pi's auth.json (same as github-copilot provider)
  *   OpenCode Go:  Uses OPENCODE_API_KEY for model probes, plus optional
  *                 OPENCODE_GO_WORKSPACE_ID + OPENCODE_GO_AUTH_COOKIE for quota
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { AnthropicUsage, CodexUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "./src/types.ts";
+import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, UsageContext } from "./src/types.ts";
 import {
 	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
@@ -24,6 +26,7 @@ import {
 	WIDGET_ID,
 	OPENAI_CODEX_PROVIDER,
 	ANTHROPIC_PROVIDER,
+	GITHUB_COPILOT_PROVIDER,
 	CODEX_RESPONSE_REFRESH_ENABLED,
 	CODEX_RESPONSE_REFRESH_SECONDS,
 	getOpenCodeGoQuotaConfig,
@@ -31,6 +34,7 @@ import {
 } from "./src/config.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
+import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
 import { getOpenCodeApiKey, checkOpenCodeGoUsage, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
 import {
 	buildStartupUsageMessage,
@@ -54,6 +58,7 @@ export default function (pi: ExtensionAPI) {
 
 	let codexUsage: CodexUsage | undefined;
 	let anthropicUsage: AnthropicUsage | undefined;
+	let copilotUsage: CopilotUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
 	let isLoading = false;
 	let widgetLoading = false;
@@ -68,6 +73,7 @@ export default function (pi: ExtensionAPI) {
 	let codexUsageRequestAt = 0;
 	let codexPassiveAt = 0;
 	let anthropicPassiveAt = 0;
+	let copilotPassiveAt = 0;
 	let goPassiveAt = 0;
 	let goPassiveQuotaAt = 0;
 	let sessionGeneration = 0;
@@ -88,12 +94,12 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		if (isUsageWidgetEnabled(ctx)) {
 			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage),
+				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage, copilotUsage),
 			);
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
-		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage);
+		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage, copilotUsage);
 	}
 
 	function resetAtFromAfter(resetAt: number | undefined, resetAfterSeconds: number | undefined, nowSec: number): number | undefined {
@@ -125,6 +131,14 @@ export default function (pi: ExtensionAPI) {
 		if (usage.tokens) usage.tokens.resetAt = resetAtFromAfter(usage.tokens.resetAt, usage.tokens.resetAfterSeconds, nowSec);
 		if (usage.inputTokens) usage.inputTokens.resetAt = resetAtFromAfter(usage.inputTokens.resetAt, usage.inputTokens.resetAfterSeconds, nowSec);
 		if (usage.outputTokens) usage.outputTokens.resetAt = resetAtFromAfter(usage.outputTokens.resetAt, usage.outputTokens.resetAfterSeconds, nowSec);
+		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
+		return usage;
+	}
+
+	function normalizeCopilotResetTimes(usage: CopilotUsage): CopilotUsage {
+		const nowSec = Math.round(Date.now() / 1000);
+		if (usage.requests) usage.requests.resetAt = resetAtFromAfter(usage.requests.resetAt, usage.requests.resetAfterSeconds, nowSec);
+		if (usage.premiumRequests) usage.premiumRequests.resetAt = resetAtFromAfter(usage.premiumRequests.resetAt, usage.premiumRequests.resetAfterSeconds, nowSec);
 		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
 		return usage;
 	}
@@ -261,6 +275,19 @@ export default function (pi: ExtensionAPI) {
 				anthropicUsage = undefined;
 			}
 
+			// Check GitHub Copilot; recent passive headers defer auto probes.
+			const skipCopilotCheck = trigger === "auto" && passiveUpdateIsFresh(copilotPassiveAt);
+			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth();
+			if (copilotAuth) {
+				checks.push(
+					checkCopilotUsage(copilotAuth, signal).then((result) => {
+						if (!signal.aborted && generation === sessionGeneration) copilotUsage = normalizeCopilotResetTimes(result);
+					}),
+				);
+			} else if (!skipCopilotCheck) {
+				copilotUsage = undefined;
+			}
+
 			// Check OpenCode Go; passive model headers can defer probes, but dashboard quota still needs proactive fetches.
 			const goQuotaState = getOpenCodeGoQuotaConfig();
 			const skipGoCheck = trigger === "auto"
@@ -295,7 +322,7 @@ export default function (pi: ExtensionAPI) {
 				widgetLoading = false;
 				renderCachedUsage(ctx, false);
 				if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
-					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage), "info");
+					ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage, copilotUsage), "info");
 				}
 			}
 		} finally {
@@ -409,6 +436,15 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		if (provider === GITHUB_COPILOT_PROVIDER) {
+			const parsed = parseCopilotUsageHeaders(event.headers, event.status, id, copilotUsage);
+			if (parsed) {
+				copilotUsage = normalizeCopilotResetTimes(parsed);
+				copilotPassiveAt = Date.now();
+				updated = true;
+			}
+		}
+
 		if (provider === "opencode-go" || hasHeaderPrefix(event.headers, "x-opencode-go-")) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, id, goUsage);
 			if (parsed) {
@@ -480,7 +516,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── /usage command ──
 	pi.registerCommand("usage", {
-		description: "Refresh and show Codex & OpenCode Go usage limits",
+		description: "Refresh and show Codex, Anthropic, Copilot, and OpenCode Go usage limits",
 		handler: async (_args, ctx) => {
 			await refreshUsage(ctx, "manual");
 		},
@@ -493,5 +529,6 @@ export { clampPercent, formatDuration, formatResetTime, parseHeaderBool, parseHe
 export { dedupe, parseBoolValue, parseEnvBool, parseEnvInt, resolveConfigValue } from "./src/config.ts";
 export { parseCodexUsageHeaders, windowMinutes, windowResetAfterSeconds, windowResetAt, windowUsedPercent } from "./src/codex.ts";
 export { isAnthropicModelUnavailable, parseAnthropicResetAt, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
+export { getCopilotBaseUrl, isCopilotModelUnavailable, isCopilotQuotaMessage, normalizeCopilotDomain, parseCopilotResetAt, parseCopilotUsageHeaders } from "./src/copilot.ts";
 export { footerResetDuration, footerUsageColor } from "./src/render.ts";
 export { isGlobalGoLimit, isPerModelUnavailable, parseOpenCodeGoUsageHeaders, resolveModelEndpoint } from "./src/opencode-go.ts";

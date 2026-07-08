@@ -27,6 +27,7 @@ export interface CodexUsage {
 
 export type GoModelStatus = "available" | "rate_limited" | "credits_error" | "error" | "no_key";
 export type GoProbeApi = "openai-completions" | "anthropic-messages";
+export type CopilotProbeApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 
 export type AnthropicAuthType = "oauth" | "api_key";
 
@@ -49,6 +50,11 @@ export interface CodexOAuthCredential {
 	accountId?: string;
 }
 
+export interface CopilotOAuthCredential extends CodexOAuthCredential {
+	enterpriseUrl?: string;
+	availableModelIds?: string[];
+}
+
 export type AuthJson = Record<string, AuthApiKeyCredential | CodexOAuthCredential | undefined>;
 
 export interface GoCheckModel {
@@ -56,6 +62,44 @@ export interface GoCheckModel {
 	api: GoProbeApi;
 	endpoint: string;
 	costRank: number;
+}
+
+export interface CopilotAuth {
+	token: string;
+	source: string;
+	baseUrl: string;
+	enterpriseDomain?: string;
+	availableModelIds?: string[];
+}
+
+export interface CopilotRateLimitWindow {
+	limit?: number;
+	remaining?: number;
+	used?: number;
+	usedPercent?: number;
+	remainingPercent?: number;
+	resetAfterSeconds?: number;
+	resetAt?: number;
+	resource?: string;
+}
+
+export type CopilotUsageWindowKey = "requests" | "premiumRequests";
+
+export interface CopilotUsage {
+	available: boolean;
+	status: GoModelStatus;
+	workingModel?: string;
+	rateLimitedModel?: string;
+	checkedModels?: number;
+	totalModels?: number;
+	availableModels?: number;
+	source?: "probe" | "headers";
+	requests?: CopilotRateLimitWindow;
+	premiumRequests?: CopilotRateLimitWindow;
+	retryAfterSeconds?: number;
+	retryResetAt?: number;
+	errorMessage?: string;
+	error?: string;
 }
 
 export interface AnthropicRateLimitWindow {

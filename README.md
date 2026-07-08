@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, and **OpenCode Go** usage limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
+Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, and **OpenCode Go** usage limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -22,7 +22,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 
 - `PI_CODING_AGENT_DIR` support instead of assuming `~/.pi/agent`.
 - `limited` status in the footer and startup notification when Codex reports `rate_limited`.
-- Color-coded footer usage/reset chunks for Codex, Anthropic, and OpenCode Go, with labels dimmed.
+- Color-coded footer usage/reset chunks for Codex, Anthropic, GitHub Copilot, and OpenCode Go, with labels dimmed.
 - Configurable persistent widget display; default startup report includes enable instructions.
 - Safer config/model handling for falsy environment values and missing OpenCode Go model cost data.
 - Cancellation of unused response bodies to avoid stalled probe connections.
@@ -43,7 +43,13 @@ When pi starts up, **pi-usage** automatically:
    - Reset times from Anthropic rate-limit headers
    - Which low-cost Claude model was checked
 
-3. **OpenCode Go** — Checks the dashboard quota first, then probes Go models only if dashboard scraping is not configured or fails. It shows:
+3. **GitHub Copilot** — Uses the same GitHub Copilot OAuth token that pi uses. It shows:
+   - Whether Copilot models are **available** or **rate limited**
+   - Generic request rate-limit percentages when GitHub exposes `x-ratelimit-*` headers
+   - Premium-request quota percentages if GitHub exposes Copilot quota headers in the future
+   - Which low-cost Copilot model was checked
+
+4. **OpenCode Go** — Checks the dashboard quota first, then probes Go models only if dashboard scraping is not configured or fails. It shows:
    - **Rolling, weekly, and monthly usage percentages** from the OpenCode Go dashboard, when configured
    - Reset times for all dashboard quota windows
    - Whether Go models are **available** or **rate limited**
@@ -96,6 +102,14 @@ No additional setup needed if you already use pi's Anthropic subscription login.
 If you haven't set up Anthropic yet, run `/login` in pi and select the Anthropic / Claude Pro/Max provider.
 
 `pi-usage` also recognizes `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`. The proactive Anthropic check makes a minimal 1-token Claude request to collect rate-limit headers; Claude Pro/Max third-party usage may draw from Anthropic extra usage, and API-key usage may incur a tiny normal API cost.
+
+### GitHub Copilot
+
+No additional setup needed if you already use pi's GitHub Copilot login. `pi-usage` reads the current Copilot token stored in `$PI_CODING_AGENT_DIR/auth.json` under `github-copilot`, including account-specific model availability when pi has it. If the token is expired, pi-usage skips the Copilot check until pi refreshes auth during normal model use.
+
+If you haven't set up Copilot yet, run `/login` in pi and select the GitHub Copilot provider.
+
+`pi-usage` also recognizes `COPILOT_GITHUB_TOKEN` and `GITHUB_COPILOT_TOKEN`. The proactive Copilot check makes a minimal 1-token request to a low-cost available Copilot model.
 
 ### OpenCode Go
 
@@ -157,9 +171,9 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/OpenCode Go status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
-By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
+By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Copilot`, `Go`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
 ```json
 {
@@ -199,6 +213,10 @@ Codex (plus) [premium]
   tokens   ████████░░░░░░░░░░░░ 40% used / 60% left resets 1m
   working: claude-haiku-4-5
 ────────────────────────────────────────
+✓ GitHub Copilot — available
+  requests ██░░░░░░░░░░░░░░░░░░ 10% used / 90% left resets 1h
+  working: gpt-5-mini
+────────────────────────────────────────
 ✓ OpenCode Go — available
   rolling ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets 3.2h
   week    ████████░░░░░░░░░░░░ 40% used / 60% left resets 4.8d
@@ -209,10 +227,10 @@ Codex (plus) [premium]
 Footer status is compact, for example:
 
 ```
-⚡ Codex:17%/4.9h,42%/3.8d │ Claude:12%t/1m,4%r/1m │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d
+⚡ Codex:17%/4.9h,42%/3.8d │ Claude:12%t/1m,4%r/1m │ Copilot:10%r/1h │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d
 ```
 
-Anthropic footer suffixes are `t` (tokens), `r` (requests), `i` (input tokens), and `o` (output tokens). OpenCode Go footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
+Anthropic footer suffixes are `t` (tokens), `r` (requests), `i` (input tokens), and `o` (output tokens). Copilot footer suffixes are `p` (premium requests) and `r` (generic requests). OpenCode Go footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
 
 ## How It Works
 
@@ -252,6 +270,20 @@ Anthropic does not expose a public Claude Pro/Max usage-percentage endpoint to p
 
 The proactive probe uses the existing Anthropic credential for provider `anthropic`, prefers Claude Pro/Max OAuth, and sends a minimal `max_tokens: 1` request to a low-cost Claude model. During normal Anthropic model use, successful responses passively mark Claude as available and update any rate-limit windows exposed by response headers.
 
+### GitHub Copilot
+
+GitHub Copilot does not currently expose a stable public quota-percentage API to pi-usage. pi-usage uses the current Copilot token for provider `github-copilot`, account-specific model availability from pi auth when present, and a minimal 1-token probe against a low-cost available model.
+
+It parses generic GitHub/Copilot response headers when available:
+
+| Header | Description |
+|--------|-------------|
+| `x-ratelimit-*` | Generic request limit, remaining requests, used requests, reset time, and resource |
+| `x-copilot-premium-requests-*` | Future/potential premium-request usage percentage and reset time |
+| `retry-after` | Retry delay for `429` rate-limit responses |
+
+During normal Copilot model use, successful responses passively mark Copilot as available, `429`/quota responses mark it as limited, and exposed quota headers update the footer/widget cache.
+
 ### OpenCode Go
 
 OpenCode Go does not currently expose a public usage/balance API. pi-usage scrapes the authenticated dashboard page at `https://opencode.ai/workspace/<workspaceId>/go` and parses the embedded `rollingUsage`, `weeklyUsage`, and `monthlyUsage` quota data when `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE` are configured.
@@ -286,6 +318,7 @@ Widget display uses pi-style extension config files:
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `ANTHROPIC_OAUTH_TOKEN` | unset | Optional Anthropic OAuth token override for Claude Pro/Max checks |
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
+| `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for model availability probes |
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
 | `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |

@@ -1,7 +1,7 @@
 {
   "name": "pi-usage",
   "version": "0.1.0",
-  "description": "Usage limit checker for pi coding agent — shows Codex, Anthropic, and OpenCode Go limits at startup",
+  "description": "Usage limit checker for pi coding agent — shows Codex, Anthropic, Copilot, and OpenCode Go limits at startup",
   "license": "MIT",
   "author": "timm-u and Michał Trojnara",
   "authors": [
@@ -34,6 +34,8 @@
     "codex",
     "anthropic",
     "claude",
+    "copilot",
+    "github-copilot",
     "opencode",
     "opencode-go",
     "monitoring"
