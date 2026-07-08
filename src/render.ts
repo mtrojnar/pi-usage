@@ -321,34 +321,10 @@ export function buildUsageWidget(
 
 	lines.push(theme.bold(fmt("accent", "⚡ Usage Limits")));
 
-	if (codex) {
-		lines.push(...renderCodexWindows(codex, fmt, true));
-	} else {
-		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(fmt("dim", "Codex — not configured"));
-	}
-
-	if (anthropic) {
-		lines.push(...renderAnthropicWindows(anthropic, fmt, true));
-	} else {
-		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(fmt("dim", "Anthropic — not configured"));
-	}
-
-	if (copilot) {
-		lines.push(...renderCopilotWindows(copilot, fmt, true));
-	} else {
-		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(fmt("dim", "GitHub Copilot — not configured"));
-	}
-
-	if (go) {
-		lines.push(...renderGoWindows(go, fmt, true));
-	} else {
-		lines.push(fmt("dim", "─".repeat(40)));
-		lines.push(fmt("dim", "OpenCode Go — not configured"));
-	}
-
+	if (codex) lines.push(...renderCodexWindows(codex, fmt, true));
+	if (anthropic) lines.push(...renderAnthropicWindows(anthropic, fmt, true));
+	if (copilot) lines.push(...renderCopilotWindows(copilot, fmt, true));
+	if (go) lines.push(...renderGoWindows(go, fmt, true));
 	for (const subscription of subscriptions) {
 		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, true));
 	}

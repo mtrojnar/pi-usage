@@ -1634,11 +1634,12 @@ describe("buildUsageWidget", () => {
 		assert.match(result.text, /OpenCode Go/);
 	});
 
-	it("shows 'not configured' when services missing", () => {
+	it("omits unconfigured services instead of showing 'not configured'", () => {
 		const result = buildUsageWidget(undefined, undefined, mockTheme, false);
-		assert.match(result.text, /not configured/);
-		assert.match(result.text, /Codex/);
-		assert.match(result.text, /OpenCode Go/);
+		assert.doesNotMatch(result.text, /not configured/);
+		assert.doesNotMatch(result.text, /Codex/);
+		assert.doesNotMatch(result.text, /OpenCode Go/);
+		assert.match(result.text, /Usage Limits/);
 	});
 
 	it("renders generic subscription providers", () => {
@@ -1675,7 +1676,8 @@ describe("buildUsageWidget", () => {
 		};
 		const result = buildUsageWidget(codex, undefined, mockTheme, false);
 		assert.match(result.text, /Codex/);
-		assert.match(result.text, /OpenCode Go.*not configured/);
+		assert.doesNotMatch(result.text, /not configured/);
+		assert.doesNotMatch(result.text, /OpenCode Go/);
 	});
 });
 
