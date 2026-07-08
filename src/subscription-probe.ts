@@ -2,6 +2,7 @@ import type {
 	AuthApiKeyCredential,
 	AuthJson,
 	GoModelStatus,
+	SelectedModel,
 	SubscriptionProbeApi,
 	SubscriptionProbeModel,
 	SubscriptionUsage,
@@ -43,6 +44,10 @@ interface PiModelLike {
 }
 
 const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
+
+export function asSubscriptionProbeApi(api: string | undefined): SubscriptionProbeApi | undefined {
+	return api === "openai-completions" || api === "openai-responses" || api === "anthropic-messages" ? api : undefined;
+}
 
 // ───────── Auth Helpers ─────────
 
@@ -92,7 +97,10 @@ function supportedApis(config: SubscriptionProviderConfig): Set<SubscriptionProb
 	return new Set(config.supportedApis ?? DEFAULT_SUPPORTED_APIS);
 }
 
-export async function getSubscriptionCheckModels(config: SubscriptionProviderConfig): Promise<SubscriptionProbeModel[]> {
+export async function getSubscriptionCheckModels(
+	config: SubscriptionProviderConfig,
+	preferredModel?: SelectedModel,
+): Promise<SubscriptionProbeModel[]> {
 	const modelsById = new Map<string, SubscriptionProbeModel>();
 	for (const model of config.documentedModels ?? []) {
 		modelsById.set(model.id, model);
@@ -118,7 +126,19 @@ export async function getSubscriptionCheckModels(config: SubscriptionProviderCon
 		// pi-ai not available — use documented models only.
 	}
 
-	const preferred = config.preferredModelIds ?? [];
+	// Prefer the currently selected model when it belongs to this provider.
+	const preferredApi = preferredModel?.provider === config.provider ? asSubscriptionProbeApi(preferredModel.api) : undefined;
+	if (preferredModel && preferredApi && supportedApis(config).has(preferredApi) && !modelsById.has(preferredModel.id)) {
+		modelsById.set(preferredModel.id, {
+			id: preferredModel.id,
+			api: preferredApi,
+			endpoint: resolveSubscriptionEndpoint(preferredModel.baseUrl, preferredApi),
+			costRank: -1,
+		});
+	}
+
+	const preferredById = preferredModel?.provider === config.provider ? preferredModel.id : undefined;
+	const preferred = preferredById ? [preferredById, ...(config.preferredModelIds ?? [])] : config.preferredModelIds ?? [];
 	return Array.from(modelsById.values()).sort((a, b) => {
 		const aPreferred = preferred.indexOf(a.id);
 		const bPreferred = preferred.indexOf(b.id);
@@ -409,6 +429,7 @@ export async function checkSubscriptionProviderUsage(
 	config: SubscriptionProviderConfig,
 	apiKey: string | undefined,
 	signal?: AbortSignal,
+	preferredModel?: SelectedModel,
 ): Promise<SubscriptionUsage> {
 	if (!apiKey) {
 		return {
@@ -420,7 +441,7 @@ export async function checkSubscriptionProviderUsage(
 		};
 	}
 
-	const models = await getSubscriptionCheckModels(config);
+	const models = await getSubscriptionCheckModels(config, preferredModel);
 	let checkedModels = 0;
 	let lastUnavailable: { model: string; message: string } | undefined;
 

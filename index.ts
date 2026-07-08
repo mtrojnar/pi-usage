@@ -179,11 +179,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function modelProvider(ctx: UsageContext): string | undefined {
-		return (ctx as UsageContext & { model?: { provider?: string } }).model?.provider;
+		return ctx.model?.provider;
 	}
 
 	function modelId(ctx: UsageContext): string | undefined {
-		return (ctx as UsageContext & { model?: { id?: string } }).model?.id;
+		return ctx.model?.id;
 	}
 
 	function messageRole(message: unknown): string | undefined {
@@ -284,12 +284,15 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
+			// Prefer probing the currently selected model so reported limits match its tier.
+			const selected = ctx.model;
+
 			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
 			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(anthropicPassiveAt);
 			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth();
 			if (anthropicAuth) {
 				checks.push(
-					checkAnthropicUsage(anthropicAuth, signal).then((result) => {
+					checkAnthropicUsage(anthropicAuth, signal, selected).then((result) => {
 						if (!signal.aborted && generation === sessionGeneration) anthropicUsage = normalizeAnthropicResetTimes(result);
 					}),
 				);
@@ -302,7 +305,7 @@ export default function (pi: ExtensionAPI) {
 			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth();
 			if (copilotAuth) {
 				checks.push(
-					checkCopilotUsage(copilotAuth, signal).then((result) => {
+					checkCopilotUsage(copilotAuth, signal, selected).then((result) => {
 						if (!signal.aborted && generation === sessionGeneration) copilotUsage = normalizeCopilotResetTimes(result);
 					}),
 				);
@@ -318,8 +321,9 @@ export default function (pi: ExtensionAPI) {
 				&& !goQuotaState.error;
 			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
 			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
+				const goPreferred = selected?.provider === "opencode-go" ? selected : undefined;
 				checks.push(
-					checkOpenCodeGoUsage(goKey, goQuotaState, signal).then((result) => {
+					checkOpenCodeGoUsage(goKey, goQuotaState, signal, goPreferred).then((result) => {
 						if (!signal.aborted && generation === sessionGeneration) goUsage = normalizeGoResetTimes(result);
 					}),
 				);
@@ -336,8 +340,9 @@ export default function (pi: ExtensionAPI) {
 					subscriptionUsages.delete(providerConfig.provider);
 					continue;
 				}
+				const subscriptionPreferred = selected?.provider === providerConfig.provider ? selected : undefined;
 				checks.push(
-					checkSubscriptionProviderUsage(providerConfig, apiKey, signal).then((result) => {
+					checkSubscriptionProviderUsage(providerConfig, apiKey, signal, subscriptionPreferred).then((result) => {
 						if (signal.aborted || generation !== sessionGeneration) return;
 						if (result.status === "no_key") {
 							subscriptionUsages.delete(providerConfig.provider);

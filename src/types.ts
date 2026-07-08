@@ -223,10 +223,18 @@ export interface OpenCodeGoQuotaResult {
 
 export type RefreshTrigger = "startup" | "manual" | "auto";
 
+export interface SelectedModel {
+	provider: string;
+	id: string;
+	api: string;
+	baseUrl: string;
+}
+
 export interface UsageContext {
 	hasUI: boolean;
 	cwd: string;
 	ui: ExtensionUIContext;
+	model?: SelectedModel;
 	isProjectTrusted?(): boolean;
 }
 

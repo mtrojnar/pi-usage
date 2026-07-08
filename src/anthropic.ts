@@ -9,6 +9,7 @@ import type {
 	AuthApiKeyCredential,
 	CodexOAuthCredential,
 	GoModelStatus,
+	SelectedModel,
 } from "./types.ts";
 import {
 	ANTHROPIC_PROVIDER,
@@ -281,7 +282,7 @@ function resolveAnthropicEndpoint(baseUrl: string): string {
 	return `${normalized}/v1/messages`;
 }
 
-async function getAnthropicCheckModels(): Promise<AnthropicCheckModel[]> {
+async function getAnthropicCheckModels(preferredModel?: SelectedModel): Promise<AnthropicCheckModel[]> {
 	const modelsById = new Map<string, AnthropicCheckModel>();
 	for (const model of FALLBACK_ANTHROPIC_MODELS) {
 		modelsById.set(model.id, model);
@@ -304,9 +305,24 @@ async function getAnthropicCheckModels(): Promise<AnthropicCheckModel[]> {
 		// pi-ai not available — use fallback models.
 	}
 
+	// Prefer the currently selected Anthropic model.
+	const preferredId = preferredModel?.provider === ANTHROPIC_PROVIDER && preferredModel.api === "anthropic-messages"
+		? preferredModel.id
+		: undefined;
+	if (preferredId && !modelsById.has(preferredId)) {
+		modelsById.set(preferredId, {
+			id: preferredId,
+			endpoint: resolveAnthropicEndpoint(preferredModel!.baseUrl || "https://api.anthropic.com"),
+			costRank: -1,
+		});
+	}
+	const preferredOrder = preferredId
+		? [preferredId, ...PREFERRED_ANTHROPIC_PROBE_MODELS]
+		: PREFERRED_ANTHROPIC_PROBE_MODELS;
+
 	return Array.from(modelsById.values()).sort((a, b) => {
-		const aPreferred = PREFERRED_ANTHROPIC_PROBE_MODELS.indexOf(a.id);
-		const bPreferred = PREFERRED_ANTHROPIC_PROBE_MODELS.indexOf(b.id);
+		const aPreferred = preferredOrder.indexOf(a.id);
+		const bPreferred = preferredOrder.indexOf(b.id);
 		if (aPreferred !== -1 || bPreferred !== -1) {
 			if (aPreferred === -1) return 1;
 			if (bPreferred === -1) return -1;
@@ -395,7 +411,7 @@ function mergeProbeMetadata(usage: AnthropicUsage, auth: AnthropicAuth, model: A
 	};
 }
 
-export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signal?: AbortSignal): Promise<AnthropicUsage> {
+export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
 	if (!auth) {
 		return {
 			available: false,
@@ -403,7 +419,7 @@ export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signa
 		};
 	}
 
-	const models = await getAnthropicCheckModels();
+	const models = await getAnthropicCheckModels(preferredModel);
 	let checkedModels = 0;
 	let lastUnavailable: { model: string; message: string } | undefined;
 

@@ -9,6 +9,7 @@ import type {
 	CopilotUsage,
 	CopilotUsageWindowKey,
 	GoModelStatus,
+	SelectedModel,
 } from "./types.ts";
 import {
 	CHECK_TIMEOUT_MS,
@@ -358,7 +359,11 @@ function fallbackCopilotModels(auth: CopilotAuth): CopilotCheckModel[] {
 		}));
 }
 
-async function getCopilotCheckModels(auth: CopilotAuth): Promise<CopilotCheckModel[]> {
+function copilotProbeApi(api: string | undefined): CopilotProbeApi | undefined {
+	return api === "openai-completions" || api === "openai-responses" || api === "anthropic-messages" ? api : undefined;
+}
+
+async function getCopilotCheckModels(auth: CopilotAuth, preferredModel?: SelectedModel): Promise<CopilotCheckModel[]> {
 	const modelsById = new Map<string, CopilotCheckModel>();
 	const allowed = auth.availableModelIds ? new Set(auth.availableModelIds) : undefined;
 
@@ -386,9 +391,25 @@ async function getCopilotCheckModels(auth: CopilotAuth): Promise<CopilotCheckMod
 		for (const model of fallbackCopilotModels(auth)) modelsById.set(model.id, model);
 	}
 
+	// Prefer the currently selected Copilot model when the account allows it.
+	const preferredApi = preferredModel?.provider === GITHUB_COPILOT_PROVIDER ? copilotProbeApi(preferredModel.api) : undefined;
+	const preferredAllowed = preferredModel && (!allowed || allowed.has(preferredModel.id));
+	if (preferredModel && preferredApi && preferredAllowed && !modelsById.has(preferredModel.id)) {
+		modelsById.set(preferredModel.id, {
+			id: preferredModel.id,
+			api: preferredApi,
+			endpoint: resolveCopilotEndpoint(auth.baseUrl || preferredModel.baseUrl || COPILOT_API_BASE_URL, preferredApi),
+			costRank: -1,
+		});
+	}
+	const preferredId = preferredApi && preferredAllowed ? preferredModel!.id : undefined;
+	const preferredOrder = preferredId
+		? [preferredId, ...PREFERRED_COPILOT_PROBE_MODELS]
+		: PREFERRED_COPILOT_PROBE_MODELS;
+
 	return Array.from(modelsById.values()).sort((a, b) => {
-		const aPreferred = PREFERRED_COPILOT_PROBE_MODELS.indexOf(a.id);
-		const bPreferred = PREFERRED_COPILOT_PROBE_MODELS.indexOf(b.id);
+		const aPreferred = preferredOrder.indexOf(a.id);
+		const bPreferred = preferredOrder.indexOf(b.id);
 		if (aPreferred !== -1 || bPreferred !== -1) {
 			if (aPreferred === -1) return 1;
 			if (bPreferred === -1) return -1;
@@ -491,7 +512,7 @@ function mergeProbeMetadata(usage: CopilotUsage, auth: CopilotAuth, model: Copil
 	};
 }
 
-export async function checkCopilotUsage(auth: CopilotAuth | undefined, signal?: AbortSignal): Promise<CopilotUsage> {
+export async function checkCopilotUsage(auth: CopilotAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<CopilotUsage> {
 	if (!auth) {
 		return {
 			available: false,
@@ -499,7 +520,7 @@ export async function checkCopilotUsage(auth: CopilotAuth | undefined, signal?: 
 		};
 	}
 
-	const models = await getCopilotCheckModels(auth);
+	const models = await getCopilotCheckModels(auth, preferredModel);
 	let checkedModels = 0;
 	let lastUnavailable: { model: string; message: string } | undefined;
 

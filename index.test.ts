@@ -79,6 +79,7 @@ import {
 	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
 import {
+	getSubscriptionCheckModels,
 	isSubscriptionModelUnavailable,
 	isSubscriptionQuotaMessage,
 	parseSubscriptionUsageHeaders,
@@ -839,6 +840,43 @@ describe("parseSubscriptionUsageHeaders", () => {
 
 	it("returns undefined without a generic subscription signal", () => {
 		assert.equal(parseSubscriptionUsageHeaders(zenConfig, { server: "test" }, 200), undefined);
+	});
+});
+
+describe("getSubscriptionCheckModels", () => {
+	const config = {
+		provider: "opencode",
+		label: "OpenCode Zen",
+		shortLabel: "Zen",
+		supportedApis: ["openai-completions", "anthropic-messages"] as any,
+		preferredModelIds: ["big-pickle"],
+		documentedModels: [
+			{ id: "big-pickle", api: "openai-completions" as any, endpoint: "https://opencode.ai/zen/v1/chat/completions", costRank: 0 },
+			{ id: "claude-haiku-4-5", api: "anthropic-messages" as any, endpoint: "https://opencode.ai/zen/v1/messages", costRank: 3 },
+		],
+	};
+
+	it("prefers the selected model first", async () => {
+		const models = await getSubscriptionCheckModels(config, {
+			provider: "opencode", id: "claude-haiku-4-5", api: "anthropic-messages", baseUrl: "https://opencode.ai/zen/v1",
+		});
+		assert.equal(models[0].id, "claude-haiku-4-5");
+	});
+
+	it("injects the selected model when it is not already listed", async () => {
+		const models = await getSubscriptionCheckModels(config, {
+			provider: "opencode", id: "custom-zen-model", api: "openai-completions", baseUrl: "https://opencode.ai/zen/v1",
+		});
+		assert.equal(models[0].id, "custom-zen-model");
+		assert.equal(models[0].endpoint, "https://opencode.ai/zen/v1/chat/completions");
+	});
+
+	it("ignores a selected model from another provider", async () => {
+		const models = await getSubscriptionCheckModels(config, {
+			provider: "anthropic", id: "totally-foreign-model", api: "anthropic-messages", baseUrl: "https://api.anthropic.com",
+		});
+		assert.ok(!models.some((m) => m.id === "totally-foreign-model"));
+		assert.equal(models[0].id, "big-pickle");
 	});
 });
 

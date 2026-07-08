@@ -295,11 +295,11 @@ Anthropic does not expose a public Claude Pro/Max usage-percentage endpoint to p
 | `anthropic-ratelimit-output-tokens-*` | Output-token rate limit, remaining tokens, and reset time |
 | `retry-after` | Retry delay for `429` rate-limit responses |
 
-The proactive probe uses the existing Anthropic credential for provider `anthropic`, prefers Claude Pro/Max OAuth, and sends a minimal `max_tokens: 1` request to a low-cost Claude model. During normal Anthropic model use, successful responses passively mark Claude as available and update any rate-limit windows exposed by response headers.
+The proactive probe uses the existing Anthropic credential for provider `anthropic`, prefers Claude Pro/Max OAuth, and sends a minimal `max_tokens: 1` request. When the model you have selected in pi is an `anthropic` model, pi-usage probes that model first so the reported rate-limit windows match its tier; otherwise it falls back to a low-cost Claude model. During normal Anthropic model use, successful responses passively mark Claude as available and update any rate-limit windows exposed by response headers.
 
 ### GitHub Copilot
 
-GitHub Copilot does not currently expose a stable public quota-percentage API to pi-usage. pi-usage uses the current Copilot token for provider `github-copilot`, account-specific model availability from pi auth when present, and a minimal 1-token probe against a low-cost available model.
+GitHub Copilot does not currently expose a stable public quota-percentage API to pi-usage. pi-usage uses the current Copilot token for provider `github-copilot`, account-specific model availability from pi auth when present, and a minimal 1-token probe. When the model you have selected in pi is a `github-copilot` model (and your account allows it), pi-usage probes that model first; otherwise it uses a low-cost available model.
 
 It parses generic GitHub/Copilot response headers when available:
 
@@ -331,6 +331,7 @@ OpenCode Zen and the additional compatible providers share a generic probe engin
 - Reads API keys from pi `auth.json` first, then provider-specific environment variables.
 - Builds a low-cost model list from documented fallbacks plus pi's installed model registry.
 - Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatible endpoints.
+- Prefers the model you currently have selected in pi when it belongs to the provider being checked, so reported limits match that model; otherwise it starts from the cheapest known model.
 - Sends a minimal 1-token request, stops on the first working model, and only tries another model when the error clearly says the model is unavailable.
 - Parses future/provider quota headers shaped like `x-<provider>-rolling-used-percent`, `x-<provider>-weekly-used-percent`, and `x-<provider>-monthly-reset-after-seconds`.
 

@@ -8,6 +8,7 @@ import type {
 	OpenCodeGoQuotaConfigState,
 	OpenCodeGoQuotaResult,
 	OpenCodeGoUsage,
+	SelectedModel,
 } from "./types.ts";
 import {
 	CHECK_TIMEOUT_MS,
@@ -331,8 +332,8 @@ async function checkOpenCodeGoQuota(configState: OpenCodeGoQuotaConfigState, sig
 	return fetchOpenCodeGoQuota(configState.config, signal);
 }
 
-async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortSignal): Promise<OpenCodeGoUsage> {
-	const result = await checkSubscriptionProviderUsage(OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal);
+async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<OpenCodeGoUsage> {
+	const result = await checkSubscriptionProviderUsage(OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal, preferredModel);
 	return {
 		available: result.available,
 		status: result.status,
@@ -351,6 +352,7 @@ export async function checkOpenCodeGoUsage(
 	apiKey: string | undefined,
 	configState: OpenCodeGoQuotaConfigState,
 	signal?: AbortSignal,
+	preferredModel?: SelectedModel,
 ): Promise<OpenCodeGoUsage> {
 	const quotaCheck = await checkOpenCodeGoQuota(configState, signal);
 	if (
@@ -393,7 +395,7 @@ export async function checkOpenCodeGoUsage(
 		};
 	}
 
-	const modelCheck = await checkOpenCodeGoModels(apiKey, signal);
+	const modelCheck = await checkOpenCodeGoModels(apiKey, signal, preferredModel);
 
 	return {
 		...modelCheck,
