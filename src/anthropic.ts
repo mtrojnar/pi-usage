@@ -3,9 +3,8 @@ import * as os from "node:os";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type {
 	AnthropicAuth,
-	AnthropicRateLimitWindow,
 	AnthropicUsage,
-	AnthropicUsageWindowKey,
+	AnthropicUsageWindow,
 	AuthApiKeyCredential,
 	CodexOAuthCredential,
 	GoModelStatus,
@@ -14,18 +13,20 @@ import type {
 import {
 	ANTHROPIC_PROVIDER,
 	ANTHROPIC_PROBE_MODEL,
+	ANTHROPIC_USAGE_URL,
 	CHECK_TIMEOUT_MS,
 	authJsonPath,
 	resolveConfigValue,
 } from "./config.ts";
 import { clampPercent, truncate } from "./format.ts";
-import { cancelResponseBody, createTimeoutSignal, readResponseText } from "./http.ts";
+import { cancelResponseBody, createTimeoutSignal, readResponseJson, readResponseText } from "./http.ts";
 
 // ───────── Constants ─────────
 
 const CLAUDE_CODE_VERSION = "2.1.75";
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+const ANTHROPIC_BETA = "claude-code-20250219,oauth-2025-04-20";
 
 const PREFERRED_ANTHROPIC_PROBE_MODELS = [
 	ANTHROPIC_PROBE_MODEL,
@@ -75,6 +76,10 @@ export const ANTHROPIC_STATUS_TEXT: Record<GoModelStatus, string> = {
 	error: "error",
 	no_key: "no auth",
 };
+
+export type AnthropicUsageApiResult =
+	| { success: true; usage: AnthropicUsage }
+	| { success: false; error: string };
 
 // ───────── Auth Helpers ─────────
 
@@ -128,7 +133,7 @@ export async function getAnthropicAuth(): Promise<AnthropicAuth | undefined> {
 	return undefined;
 }
 
-// ───────── Header Parsing ─────────
+// ───────── Header / Value Parsing ─────────
 
 function headerValue(headers: Record<string, string>, name: string): string | undefined {
 	const lowerName = name.toLowerCase();
@@ -165,7 +170,7 @@ export function parseAnthropicResetAt(value: string | undefined): number {
 
 	const numeric = Number(trimmed);
 	if (Number.isFinite(numeric) && numeric > 0) {
-		// Reset headers are normally RFC3339 timestamps, but tolerate unix seconds/ms.
+		// Unified rate-limit reset headers are unix seconds; tolerate ms too.
 		if (numeric > 1_000_000_000_000) return Math.round(numeric / 1000);
 		if (numeric > 1_000_000_000) return Math.round(numeric);
 	}
@@ -174,49 +179,24 @@ export function parseAnthropicResetAt(value: string | undefined): number {
 	return Number.isFinite(timestamp) ? Math.round(timestamp / 1000) : 0;
 }
 
-function resetAfterFromAt(resetAt: number | undefined): number | undefined {
-	if (resetAt === undefined || resetAt <= 0) return undefined;
+function resetAfterFromAt(resetAt: number): number | undefined {
+	if (resetAt <= 0) return undefined;
 	return Math.max(0, Math.round(resetAt - Date.now() / 1000));
 }
 
-function parseAnthropicRateLimitWindow(headers: Record<string, string>, headerKey: string): AnthropicRateLimitWindow | undefined {
-	const prefix = `anthropic-ratelimit-${headerKey}`;
-	const limit = parseOptionalNumber(headers, `${prefix}-limit`);
-	const remaining = parseOptionalNumber(headers, `${prefix}-remaining`);
-	const resetAt = parseAnthropicResetAt(headerValue(headers, `${prefix}-reset`));
+// ───────── Unified Rate-Limit Header Parsing ─────────
 
-	if (limit === undefined && remaining === undefined && resetAt <= 0) return undefined;
-
-	const usedPercent = limit !== undefined && limit > 0 && remaining !== undefined
-		? clampPercent(((limit - remaining) / limit) * 100)
-		: undefined;
-	const remainingPercent = limit !== undefined && limit > 0 && remaining !== undefined
-		? clampPercent((remaining / limit) * 100)
-		: undefined;
-
+function parseUnifiedWindow(headers: Record<string, string>, key: "5h" | "7d"): AnthropicUsageWindow | undefined {
+	const utilization = parseOptionalNumber(headers, `anthropic-ratelimit-unified-${key}-utilization`);
+	if (utilization === undefined) return undefined; // no percent → nothing to display
+	const resetAt = parseAnthropicResetAt(headerValue(headers, `anthropic-ratelimit-unified-${key}-reset`));
 	return {
-		limit,
-		remaining,
-		usedPercent,
-		remainingPercent,
+		// Header utilization is a 0..1 fraction; scale to a percentage.
+		utilizationPercent: clampPercent(utilization * 100),
 		resetAt: resetAt > 0 ? resetAt : undefined,
 		resetAfterSeconds: resetAfterFromAt(resetAt),
+		status: headerValue(headers, `anthropic-ratelimit-unified-${key}-status`),
 	};
-}
-
-function applyWindow(
-	usage: AnthropicUsage,
-	key: AnthropicUsageWindowKey,
-	window: AnthropicRateLimitWindow | undefined,
-	previous?: AnthropicUsage,
-): void {
-	const value = window ?? previous?.[key];
-	if (!value) return;
-	usage[key] = value;
-}
-
-function hasAnthropicRateLimitHeaders(headers: Record<string, string>): boolean {
-	return hasHeaderPrefix(headers, "anthropic-ratelimit-");
 }
 
 export function parseAnthropicUsageHeaders(
@@ -225,12 +205,19 @@ export function parseAnthropicUsageHeaders(
 	modelId?: string,
 	previous?: AnthropicUsage,
 ): AnthropicUsage | undefined {
-	const hasRateLimitHeaders = hasAnthropicRateLimitHeaders(headers);
+	const hasUnified = hasHeaderPrefix(headers, "anthropic-ratelimit-unified-");
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
-	const hasPassiveSignal = hasRateLimitHeaders || status === 429 || (status >= 200 && status < 300 && !!modelId);
-	if (!hasPassiveSignal) return undefined;
+	const hasSignal = hasUnified || status === 429 || (status >= 200 && status < 300 && !!modelId);
+	if (!hasSignal) return undefined;
 
-	const inferredStatus: GoModelStatus = status === 429
+	const fiveHour = parseUnifiedWindow(headers, "5h") ?? previous?.fiveHour;
+	const weekly = parseUnifiedWindow(headers, "7d") ?? previous?.weekly;
+	const overall = headerValue(headers, "anthropic-ratelimit-unified-status");
+	const rejected = status === 429 || overall === "rejected"
+		|| parseUnifiedWindow(headers, "5h")?.status === "rejected"
+		|| parseUnifiedWindow(headers, "7d")?.status === "rejected";
+
+	const inferredStatus: GoModelStatus = rejected
 		? "rate_limited"
 		: status === 401 || status === 403
 			? "error"
@@ -241,15 +228,17 @@ export function parseAnthropicUsageHeaders(
 	const rateLimited = inferredStatus === "rate_limited";
 	const nowSec = Math.round(Date.now() / 1000);
 
-	const usage: AnthropicUsage = {
+	return {
 		available,
 		status: inferredStatus,
+		authType: previous?.authType,
+		source: "headers",
+		fiveHour,
+		weekly,
 		workingModel: available ? modelId ?? previous?.workingModel : previous?.workingModel,
 		rateLimitedModel: rateLimited ? modelId ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
 		checkedModels: previous?.checkedModels,
 		totalModels: previous?.totalModels,
-		authType: previous?.authType,
-		source: "headers",
 		retryAfterSeconds: rateLimited
 			? retryAfterSeconds > 0 ? retryAfterSeconds : previous?.retryAfterSeconds
 			: undefined,
@@ -257,23 +246,97 @@ export function parseAnthropicUsageHeaders(
 			? retryAfterSeconds > 0 ? nowSec + retryAfterSeconds : previous?.retryResetAt
 			: undefined,
 		errorMessage: rateLimited
-			? retryAfterSeconds > 0
-				? `Rate limited; retry after ${retryAfterSeconds}s`
-				: "Rate limited"
+			? retryAfterSeconds > 0 ? `Rate limited; retry after ${retryAfterSeconds}s` : "Rate limited"
 			: inferredStatus === "error"
 				? `HTTP ${status}`
 				: undefined,
 	};
-
-	applyWindow(usage, "requests", parseAnthropicRateLimitWindow(headers, "requests"), previous);
-	applyWindow(usage, "tokens", parseAnthropicRateLimitWindow(headers, "tokens"), previous);
-	applyWindow(usage, "inputTokens", parseAnthropicRateLimitWindow(headers, "input-tokens"), previous);
-	applyWindow(usage, "outputTokens", parseAnthropicRateLimitWindow(headers, "output-tokens"), previous);
-
-	return usage;
 }
 
-// ───────── Model Probing ─────────
+// ───────── Usage Endpoint (Claude Pro/Max OAuth) ─────────
+
+interface AnthropicUsageApiWindow {
+	utilization?: number | null;
+	resets_at?: string | null;
+}
+
+interface AnthropicUsageApiResponse {
+	five_hour?: AnthropicUsageApiWindow | null;
+	seven_day?: AnthropicUsageApiWindow | null;
+}
+
+function windowFromApi(window: AnthropicUsageApiWindow | null | undefined): AnthropicUsageWindow | undefined {
+	if (!window) return undefined;
+	const utilization = Number(window.utilization);
+	if (!Number.isFinite(utilization)) return undefined;
+	const resetAt = parseAnthropicResetAt(window.resets_at ?? undefined);
+	return {
+		utilizationPercent: clampPercent(utilization),
+		resetAt: resetAt > 0 ? resetAt : undefined,
+		resetAfterSeconds: resetAfterFromAt(resetAt),
+	};
+}
+
+function anthropicUsageHeaders(token: string): Record<string, string> {
+	return {
+		"Authorization": `Bearer ${token}`,
+		"anthropic-version": "2023-06-01",
+		"anthropic-beta": ANTHROPIC_BETA,
+		"user-agent": `claude-cli/${CLAUDE_CODE_VERSION}`,
+		"x-app": "cli",
+		"anthropic-dangerous-direct-browser-access": "true",
+		"Accept": "application/json",
+	};
+}
+
+export async function checkAnthropicUsageFromUsageApi(token: string, signal?: AbortSignal): Promise<AnthropicUsageApiResult> {
+	try {
+		const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
+
+		let response: Response;
+		try {
+			response = await fetch(ANTHROPIC_USAGE_URL, {
+				headers: anthropicUsageHeaders(token),
+				signal: timeoutSignal.signal,
+			});
+		} finally {
+			timeoutSignal.cleanup();
+		}
+
+		if (!response.ok) {
+			let detail = `HTTP ${response.status}`;
+			try {
+				const body = await readResponseText(response, signal);
+				detail = truncate(body, 160) || detail;
+			} catch { /* ignore */ }
+			return { success: false, error: `Anthropic usage API: ${detail}` };
+		}
+
+		const data = await readResponseJson<AnthropicUsageApiResponse>(response, signal);
+		const fiveHour = windowFromApi(data.five_hour);
+		const weekly = windowFromApi(data.seven_day);
+		if (!fiveHour && !weekly) {
+			return { success: false, error: "Anthropic usage API: no usage windows" };
+		}
+
+		const rateLimited = (fiveHour?.utilizationPercent ?? 0) >= 100 || (weekly?.utilizationPercent ?? 0) >= 100;
+		return {
+			success: true,
+			usage: {
+				available: !rateLimited,
+				status: rateLimited ? "rate_limited" : "available",
+				authType: "oauth",
+				source: "usage_api",
+				fiveHour,
+				weekly,
+			},
+		};
+	} catch (e: unknown) {
+		return { success: false, error: e instanceof Error ? e.message : String(e) };
+	}
+}
+
+// ───────── Model Probing (API-key auth and OAuth fallback) ─────────
 
 function resolveAnthropicEndpoint(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
@@ -342,7 +405,7 @@ function anthropicProbeHeaders(auth: AnthropicAuth): Record<string, string> {
 
 	if (auth.type === "oauth") {
 		headers["Authorization"] = `Bearer ${auth.token}`;
-		headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
+		headers["anthropic-beta"] = ANTHROPIC_BETA;
 		headers["user-agent"] = `claude-cli/${CLAUDE_CODE_VERSION}`;
 		headers["x-app"] = "cli";
 	} else {
@@ -411,14 +474,7 @@ function mergeProbeMetadata(usage: AnthropicUsage, auth: AnthropicAuth, model: A
 	};
 }
 
-export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
-	if (!auth) {
-		return {
-			available: false,
-			status: "no_key",
-		};
-	}
-
+async function checkAnthropicUsageWithProbe(auth: AnthropicAuth, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
 	const models = await getAnthropicCheckModels(preferredModel);
 	let checkedModels = 0;
 	let lastUnavailable: { model: string; message: string } | undefined;
@@ -496,4 +552,35 @@ export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signa
 			source: "probe",
 		};
 	}
+}
+
+// ───────── Public API ─────────
+
+export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
+	if (!auth) {
+		return {
+			available: false,
+			status: "no_key",
+		};
+	}
+
+	// Claude Pro/Max: read the free usage endpoint (no model request, no extra-usage billing).
+	if (auth.type === "oauth") {
+		const usageApiResult = await checkAnthropicUsageFromUsageApi(auth.token, signal);
+		if (usageApiResult.success) return usageApiResult.usage;
+		if (signal?.aborted) {
+			return { available: false, status: "error", authType: "oauth", source: "usage_api", error: usageApiResult.error };
+		}
+
+		// Endpoint unavailable — fall back to a probe that surfaces the unified rate-limit headers.
+		const probeResult = await checkAnthropicUsageWithProbe(auth, signal, preferredModel);
+		if (probeResult.status === "error" && !probeResult.fiveHour && !probeResult.weekly) {
+			const probeError = probeResult.errorMessage || probeResult.error;
+			probeResult.error = `${usageApiResult.error}; fallback probe: ${probeError ?? "failed"}`;
+		}
+		return probeResult;
+	}
+
+	// API-key auth has no subscription usage endpoint; probe for availability only.
+	return checkAnthropicUsageWithProbe(auth, signal, preferredModel);
 }

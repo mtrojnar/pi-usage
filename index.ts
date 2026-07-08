@@ -140,10 +140,8 @@ export default function (pi: ExtensionAPI) {
 
 	function normalizeAnthropicResetTimes(usage: AnthropicUsage): AnthropicUsage {
 		const nowSec = Math.round(Date.now() / 1000);
-		if (usage.requests) usage.requests.resetAt = resetAtFromAfter(usage.requests.resetAt, usage.requests.resetAfterSeconds, nowSec);
-		if (usage.tokens) usage.tokens.resetAt = resetAtFromAfter(usage.tokens.resetAt, usage.tokens.resetAfterSeconds, nowSec);
-		if (usage.inputTokens) usage.inputTokens.resetAt = resetAtFromAfter(usage.inputTokens.resetAt, usage.inputTokens.resetAfterSeconds, nowSec);
-		if (usage.outputTokens) usage.outputTokens.resetAt = resetAtFromAfter(usage.outputTokens.resetAt, usage.outputTokens.resetAfterSeconds, nowSec);
+		if (usage.fiveHour) usage.fiveHour.resetAt = resetAtFromAfter(usage.fiveHour.resetAt, usage.fiveHour.resetAfterSeconds, nowSec);
+		if (usage.weekly) usage.weekly.resetAt = resetAtFromAfter(usage.weekly.resetAt, usage.weekly.resetAfterSeconds, nowSec);
 		usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
 		return usage;
 	}

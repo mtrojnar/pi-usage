@@ -58,6 +58,7 @@ import {
 	renderSubscriptionWindows,
 } from "./src/render.ts";
 import {
+	checkAnthropicUsageFromUsageApi,
 	isAnthropicModelUnavailable,
 	parseAnthropicResetAt,
 	parseAnthropicUsageHeaders,
@@ -635,24 +636,34 @@ describe("parseCodexUsageHeaders", () => {
 });
 
 describe("parseAnthropicUsageHeaders", () => {
-	it("parses Anthropic rate-limit headers", () => {
-		const resetIso = new Date(Date.now() + 60_000).toISOString();
+	it("parses unified 5h/7d rate-limit headers", () => {
 		const usage = parseAnthropicUsageHeaders({
-			"anthropic-ratelimit-requests-limit": "100",
-			"anthropic-ratelimit-requests-remaining": "75",
-			"anthropic-ratelimit-requests-reset": resetIso,
-			"anthropic-ratelimit-tokens-limit": "1000",
-			"anthropic-ratelimit-tokens-remaining": "500",
+			"anthropic-ratelimit-unified-5h-utilization": "0.36",
+			"anthropic-ratelimit-unified-5h-reset": "2000000000",
+			"anthropic-ratelimit-unified-5h-status": "allowed",
+			"anthropic-ratelimit-unified-7d-utilization": "0.03",
+			"anthropic-ratelimit-unified-7d-reset": "2000500000",
+			"anthropic-ratelimit-unified-status": "allowed",
 		}, 200, "claude-haiku-4-5");
 
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.workingModel, "claude-haiku-4-5");
-		assert.equal(usage.requests?.usedPercent, 25);
-		assert.equal(usage.requests?.remainingPercent, 75);
-		assert.ok((usage.requests?.resetAfterSeconds ?? 0) > 0);
-		assert.equal(usage.tokens?.usedPercent, 50);
+		assert.equal(usage.fiveHour?.utilizationPercent, 36);
+		assert.equal(usage.fiveHour?.resetAt, 2000000000);
+		assert.equal(usage.weekly?.utilizationPercent, 3);
+		assert.equal(usage.weekly?.resetAt, 2000500000);
 		assert.equal(usage.source, "headers");
+	});
+
+	it("marks rate limited when unified status is rejected", () => {
+		const usage = parseAnthropicUsageHeaders({
+			"anthropic-ratelimit-unified-5h-utilization": "1",
+			"anthropic-ratelimit-unified-status": "rejected",
+		}, 200, "claude-opus-4-8");
+		assert.ok(usage);
+		assert.equal(usage.status, "rate_limited");
+		assert.equal(usage.fiveHour?.utilizationPercent, 100);
 	});
 
 	it("infers Anthropic rate limit from 429 retry-after", () => {
@@ -664,21 +675,58 @@ describe("parseAnthropicUsageHeaders", () => {
 		assert.match(usage.errorMessage ?? "", /30s/);
 	});
 
-	it("preserves previous Anthropic quota on successful availability headers", () => {
+	it("preserves previous Anthropic windows on plain availability headers", () => {
 		const usage = parseAnthropicUsageHeaders({}, 200, "claude-haiku-4-5", {
 			available: false,
 			status: "rate_limited",
-			requests: { usedPercent: 90, remainingPercent: 10 },
+			fiveHour: { utilizationPercent: 90 },
 			retryAfterSeconds: 30,
 		});
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
-		assert.equal(usage.requests?.usedPercent, 90);
+		assert.equal(usage.fiveHour?.utilizationPercent, 90);
 		assert.equal(usage.retryAfterSeconds, undefined);
 	});
 
 	it("returns undefined when no Anthropic signal is present", () => {
 		assert.equal(parseAnthropicUsageHeaders({ server: "test" }, 200), undefined);
+	});
+});
+
+describe("checkAnthropicUsageFromUsageApi", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => { globalThis.fetch = realFetch; });
+
+	it("maps five_hour/seven_day utilization to windows", async () => {
+		globalThis.fetch = (async () => new Response(JSON.stringify({
+			five_hour: { utilization: 37, resets_at: "2030-01-01T00:00:00+00:00" },
+			seven_day: { utilization: 4, resets_at: "2030-01-08T00:00:00+00:00" },
+		}), { status: 200 })) as typeof fetch;
+		const r = await checkAnthropicUsageFromUsageApi("tok");
+		assert.ok(r.success);
+		if (!r.success) return;
+		assert.equal(r.usage.status, "available");
+		assert.equal(r.usage.source, "usage_api");
+		assert.equal(r.usage.authType, "oauth");
+		assert.equal(r.usage.fiveHour?.utilizationPercent, 37);
+		assert.equal(r.usage.weekly?.utilizationPercent, 4);
+		assert.ok((r.usage.fiveHour?.resetAt ?? 0) > 0);
+	});
+
+	it("marks rate limited at >=100% utilization", async () => {
+		globalThis.fetch = (async () => new Response(JSON.stringify({
+			five_hour: { utilization: 100 }, seven_day: { utilization: 50 },
+		}), { status: 200 })) as typeof fetch;
+		const r = await checkAnthropicUsageFromUsageApi("tok");
+		assert.ok(r.success);
+		if (!r.success) return;
+		assert.equal(r.usage.status, "rate_limited");
+	});
+
+	it("fails on non-ok responses", async () => {
+		globalThis.fetch = (async () => new Response("nope", { status: 403 })) as typeof fetch;
+		const r = await checkAnthropicUsageFromUsageApi("tok");
+		assert.equal(r.success, false);
 	});
 });
 
@@ -1366,24 +1414,24 @@ describe("renderCodexWindows", () => {
 describe("renderAnthropicWindows", () => {
 	const identity = (_color: string, text: string) => text;
 
-	it("renders rate-limit windows", () => {
+	it("renders 5hr/week utilization windows", () => {
 		const anthropic: AnthropicUsage = {
 			available: true,
 			status: "available",
 			authType: "oauth",
-			workingModel: "claude-haiku-4-5",
-			requests: { usedPercent: 25, remainingPercent: 75, resetAfterSeconds: 60 },
-			tokens: { usedPercent: 50, remainingPercent: 50, resetAfterSeconds: 120 },
+			source: "usage_api",
+			fiveHour: { utilizationPercent: 36, resetAfterSeconds: 7200 },
+			weekly: { utilizationPercent: 3, resetAfterSeconds: 520000 },
 		};
 		const result = renderAnthropicWindows(anthropic, identity as any, false);
 		const joined = result.join("\n");
 		assert.match(joined, /Anthropic/);
 		assert.match(joined, /Claude Pro\/Max/);
-		assert.match(joined, /requests/);
-		assert.match(joined, /tokens/);
-		assert.match(joined, /25%/);
-		assert.match(joined, /50%/);
-		assert.match(joined, /claude-haiku-4-5/);
+		assert.match(joined, /5hr/);
+		assert.match(joined, /week/);
+		assert.match(joined, /36%/);
+		assert.match(joined, /3%/);
+		assert.match(joined, /resets in/);
 	});
 
 	it("renders retry-only rate limit", () => {
@@ -1405,7 +1453,7 @@ describe("renderAnthropicWindows", () => {
 		const anthropic: AnthropicUsage = {
 			available: true,
 			status: "available",
-			requests: { usedPercent: 50, remainingPercent: 50 },
+			fiveHour: { utilizationPercent: 50 },
 		};
 		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
 		const result = renderAnthropicWindows(anthropic, colorFmt as any, true).join("\n");

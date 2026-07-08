@@ -108,16 +108,12 @@ export interface CopilotUsage {
 	error?: string;
 }
 
-export interface AnthropicRateLimitWindow {
-	limit?: number;
-	remaining?: number;
-	usedPercent?: number;
-	remainingPercent?: number;
+export interface AnthropicUsageWindow {
+	utilizationPercent: number;   // 0..100 of the plan window
 	resetAfterSeconds?: number;
-	resetAt?: number;
+	resetAt?: number;             // unix timestamp seconds
+	status?: string;              // "allowed" | "allowed_warning" | "rejected"
 }
-
-export type AnthropicUsageWindowKey = "requests" | "tokens" | "inputTokens" | "outputTokens";
 
 export interface AnthropicUsage {
 	available: boolean;
@@ -127,11 +123,9 @@ export interface AnthropicUsage {
 	checkedModels?: number;
 	totalModels?: number;
 	authType?: AnthropicAuthType;
-	source?: "probe" | "headers";
-	requests?: AnthropicRateLimitWindow;
-	tokens?: AnthropicRateLimitWindow;
-	inputTokens?: AnthropicRateLimitWindow;
-	outputTokens?: AnthropicRateLimitWindow;
+	source?: "usage_api" | "probe" | "headers";
+	fiveHour?: AnthropicUsageWindow;   // 5-hour subscription window
+	weekly?: AnthropicUsageWindow;     // 7-day subscription window
 	retryAfterSeconds?: number;
 	retryResetAt?: number;
 	errorMessage?: string;

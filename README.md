@@ -37,11 +37,12 @@ When pi starts up, **pi-usage** automatically:
    - Reset times for both windows
    - Plan type, active limit, and credits info
 
-2. **Anthropic Claude** — Uses the same Anthropic Claude Pro/Max OAuth token that pi uses, or an Anthropic key if configured. It shows:
-   - Whether Claude models are **available** or **rate limited**
-   - Request, token, input-token, and output-token rate-limit percentages when Anthropic exposes them
-   - Reset times from Anthropic rate-limit headers
-   - Which low-cost Claude model was checked
+2. **Anthropic Claude** — For Claude Pro/Max it calls Anthropic's free subscription usage endpoint (same OAuth token pi uses); no model request is made. It shows:
+   - **5-hour window** utilization percentage
+   - **Weekly (7-day) window** utilization percentage
+   - Reset times for both windows
+   - Whether Claude is **available** or **rate limited**
+   - (API-key auth has no subscription usage endpoint, so it only reports availability via a minimal probe)
 
 3. **GitHub Copilot** — Uses the same GitHub Copilot OAuth token that pi uses. It shows:
    - Whether Copilot models are **available** or **rate limited**
@@ -107,7 +108,7 @@ No additional setup needed if you already use pi's Anthropic subscription login.
 
 If you haven't set up Anthropic yet, run `/login` in pi and select the Anthropic / Claude Pro/Max provider.
 
-`pi-usage` also recognizes `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`. The proactive Anthropic check makes a minimal 1-token Claude request to collect rate-limit headers; Claude Pro/Max third-party usage may draw from Anthropic extra usage, and API-key usage may incur a tiny normal API cost.
+`pi-usage` also recognizes `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`. For Claude Pro/Max (OAuth), the proactive check reads Anthropic's free subscription usage endpoint — it makes **no model request** and does not draw from your usage. For plain API keys (no subscription usage endpoint), it falls back to a minimal 1-token availability probe that may incur a tiny normal API cost.
 
 ### GitHub Copilot
 
@@ -233,9 +234,8 @@ Codex (plus) [premium]
   week  ████████████░░░░░░░░ 62% resets in 3.8d
 ────────────────────────────────────────
 ✓ Anthropic (Claude Pro/Max) — available
-  requests ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets in 1m
-  tokens   ████████░░░░░░░░░░░░ 40% used / 60% left resets in 1m
-  working: claude-haiku-4-5
+  5hr   ███████░░░░░░░░░░░░░ 36% resets in 2h
+  week  █░░░░░░░░░░░░░░░░░░░  3% resets in 6.1d
 ────────────────────────────────────────
 ✓ GitHub Copilot — available
   requests ██░░░░░░░░░░░░░░░░░░ 10% used / 90% left resets in 1h
@@ -254,10 +254,10 @@ Codex (plus) [premium]
 Footer status is compact, for example:
 
 ```
-⚡ Codex:17%/4.9h,42%/3.8d │ Claude:12%t/1m,4%r/1m │ Copilot:10%r/1h │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d │ Zen:✓
+⚡ Codex:17%/4.9h,42%/3.8d │ Claude:36%/2h,3%/6.1d │ Copilot:10%r/1h │ Go:20%r/3.2h,40%w/4.8d,60%m/12.4d │ Zen:✓
 ```
 
-Anthropic footer suffixes are `t` (tokens), `r` (requests), `i` (input tokens), and `o` (output tokens). Copilot footer suffixes are `p` (premium requests) and `r` (generic requests). OpenCode Go and compatible-provider footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
+Claude footer chunks are the 5-hour then weekly window (no suffix, like Codex). Copilot footer suffixes are `p` (premium requests) and `r` (generic requests). OpenCode Go and compatible-provider footer suffixes are `r` (rolling), `w` (week), and `m` (month). Widget progress bars and percentages turn **yellow** (>70%) or **red** (>90%). Footer chunks use: dim (`0–50%`), accent (`51–80%`), warning (`81–99%`), error (`100%`).
 
 ## How It Works
 
@@ -285,17 +285,27 @@ During normal Codex model use, pi-usage passively reads the same `x-codex-*` hea
 
 ### Anthropic Claude
 
-Anthropic does not expose a public Claude Pro/Max usage-percentage endpoint to pi-usage. Instead, pi-usage uses Anthropic response headers from normal Claude calls and from a minimal 1-token probe to derive rate-limit usage:
+For Claude Pro/Max (OAuth), pi-usage calls Anthropic's subscription usage endpoint `https://api.anthropic.com/api/oauth/usage` with the same OAuth token pi stores for `anthropic`. This returns the plan's 5-hour and 7-day utilization and reset times **without making a model request** (so it does not draw from your usage):
+
+```json
+{
+  "five_hour": { "utilization": 37, "resets_at": "2026-07-08T13:00:00+00:00" },
+  "seven_day": { "utilization": 4,  "resets_at": "2026-07-14T23:00:00+00:00" }
+}
+```
+
+If that endpoint is unavailable, pi-usage falls back to a minimal `max_tokens: 1` probe and reads the unified rate-limit response headers instead. During normal Claude use, these same headers are read passively from pi's `after_provider_response` event, so the display updates live:
 
 | Header | Description |
 |--------|-------------|
-| `anthropic-ratelimit-requests-*` | Request rate limit, remaining requests, and reset time |
-| `anthropic-ratelimit-tokens-*` | Combined token rate limit, remaining tokens, and reset time |
-| `anthropic-ratelimit-input-tokens-*` | Input-token rate limit, remaining tokens, and reset time |
-| `anthropic-ratelimit-output-tokens-*` | Output-token rate limit, remaining tokens, and reset time |
+| `anthropic-ratelimit-unified-5h-utilization` | 5-hour window utilization (0..1 fraction) |
+| `anthropic-ratelimit-unified-5h-reset` | 5-hour window reset timestamp |
+| `anthropic-ratelimit-unified-7d-utilization` | 7-day window utilization (0..1 fraction) |
+| `anthropic-ratelimit-unified-7d-reset` | 7-day window reset timestamp |
+| `anthropic-ratelimit-unified-status` | Overall status (`rejected` ⇒ rate limited) |
 | `retry-after` | Retry delay for `429` rate-limit responses |
 
-The proactive probe uses the existing Anthropic credential for provider `anthropic`, prefers Claude Pro/Max OAuth, and sends a minimal `max_tokens: 1` request. When the model you have selected in pi is an `anthropic` model, pi-usage probes that model first so the reported rate-limit windows match its tier; otherwise it falls back to a low-cost Claude model. During normal Anthropic model use, successful responses passively mark Claude as available and update any rate-limit windows exposed by response headers.
+For plain API-key auth there is no subscription usage endpoint or unified header, so pi-usage only reports availability via a minimal probe (preferring the currently selected `anthropic` model when one is set).
 
 ### GitHub Copilot
 

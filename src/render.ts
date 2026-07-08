@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { AnthropicRateLimitWindow, AnthropicUsage, CodexUsage, CopilotRateLimitWindow, CopilotUsage, OpenCodeGoUsage, SubscriptionUsage, UsageContext } from "./types.ts";
+import type { AnthropicUsage, CodexUsage, CopilotRateLimitWindow, CopilotUsage, OpenCodeGoUsage, SubscriptionUsage, UsageContext } from "./types.ts";
 import { ANTHROPIC_COLOR_MAP, ANTHROPIC_STATUS_TEXT } from "./anthropic.ts";
 import { COPILOT_COLOR_MAP, COPILOT_STATUS_TEXT } from "./copilot.ts";
 import { GO_COLOR_MAP, GO_STATUS_TEXT } from "./opencode-go.ts";
@@ -75,25 +75,6 @@ export function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, t
 
 // ───────── Rendering: Anthropic Windows ─────────
 
-function renderAnthropicLimitWindow(
-	label: string,
-	window: AnthropicRateLimitWindow | undefined,
-	fmt: (color: ThemeColor, text: string) => string,
-	useColor: boolean,
-): string | undefined {
-	if (!window || window.usedPercent === undefined) return undefined;
-	const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
-	const remaining = window.remainingPercent !== undefined
-		? ` / ${window.remainingPercent.toFixed(0)}% left`
-		: "";
-	if (useColor) {
-		const windowColor = usageColor(window.usedPercent);
-		const windowBar = progressBar(window.usedPercent);
-		return `  ${label.padEnd(8)} ${fmt(windowColor, windowBar)} ${fmt(windowColor, `${window.usedPercent.toFixed(0)}% used`)}${fmt("dim", remaining + reset)}`;
-	}
-	return `  ${label.padEnd(8)} ${progressBar(window.usedPercent)} ${window.usedPercent.toFixed(0)}% used${remaining}${reset}`;
-}
-
 export function renderAnthropicWindows(anthropic: AnthropicUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
 	const lines: string[] = [];
 	const icon = statusIcon(anthropic.status);
@@ -108,17 +89,22 @@ export function renderAnthropicWindows(anthropic: AnthropicUsage, fmt: (color: T
 	lines.push(`${fmt(color, `${icon} Anthropic`)} ${fmt("dim", `(${authLabel}) — ${ANTHROPIC_STATUS_TEXT[anthropic.status]}`)}`);
 
 	const windows = [
-		{ label: "requests", window: anthropic.requests },
-		{ label: "tokens", window: anthropic.tokens },
-		{ label: "input", window: anthropic.inputTokens },
-		{ label: "output", window: anthropic.outputTokens },
+		{ label: "5hr", window: anthropic.fiveHour },
+		{ label: "week", window: anthropic.weekly },
 	];
 	for (const { label, window } of windows) {
-		const rendered = renderAnthropicLimitWindow(label, window, fmt, useColor);
-		if (rendered) lines.push(rendered);
+		if (!window) continue;
+		const pct = window.utilizationPercent;
+		const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
+		if (useColor) {
+			const windowColor = usageColor(pct);
+			lines.push(`  ${label.padEnd(6)} ${fmt(windowColor, progressBar(pct))} ${fmt(windowColor, `${pct.toFixed(0)}%`)}${fmt("dim", reset)}`);
+		} else {
+			lines.push(`  ${label.padEnd(6)} ${progressBar(pct)} ${pct.toFixed(0)}%${reset}`);
+		}
 	}
 
-	if (anthropic.status === "rate_limited" && anthropic.retryAfterSeconds && !windows.some(({ window }) => window?.usedPercent !== undefined)) {
+	if (anthropic.status === "rate_limited" && anthropic.retryAfterSeconds && !anthropic.fiveHour && !anthropic.weekly) {
 		lines.push(`  ${fmt("warning", `retry: ${formatDuration(anthropic.retryAfterSeconds)}`)}`);
 	}
 	if (anthropic.workingModel) lines.push(`  ${fmt("dim", `working: ${anthropic.workingModel}`)}`);
@@ -425,17 +411,11 @@ function subscriptionFooterSummary(subscription: SubscriptionUsage, theme: Theme
 
 function anthropicFooterSummary(anthropic: AnthropicUsage, theme: Theme): string {
 	const quotaParts: string[] = [];
-	if (anthropic.tokens?.usedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(anthropic.tokens.usedPercent, theme, anthropic.tokens.resetAt, anthropic.tokens.resetAfterSeconds, "t"));
+	if (anthropic.fiveHour) {
+		quotaParts.push(footerWindowSummary(anthropic.fiveHour.utilizationPercent, theme, anthropic.fiveHour.resetAt, anthropic.fiveHour.resetAfterSeconds));
 	}
-	if (anthropic.requests?.usedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(anthropic.requests.usedPercent, theme, anthropic.requests.resetAt, anthropic.requests.resetAfterSeconds, "r"));
-	}
-	if (anthropic.inputTokens?.usedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(anthropic.inputTokens.usedPercent, theme, anthropic.inputTokens.resetAt, anthropic.inputTokens.resetAfterSeconds, "i"));
-	}
-	if (anthropic.outputTokens?.usedPercent !== undefined) {
-		quotaParts.push(footerWindowSummary(anthropic.outputTokens.usedPercent, theme, anthropic.outputTokens.resetAt, anthropic.outputTokens.resetAfterSeconds, "o"));
+	if (anthropic.weekly) {
+		quotaParts.push(footerWindowSummary(anthropic.weekly.utilizationPercent, theme, anthropic.weekly.resetAt, anthropic.weekly.resetAfterSeconds));
 	}
 	if (quotaParts.length > 0) return quotaParts.join(theme.fg("dim", ","));
 	if (anthropic.status === "rate_limited" && anthropic.retryAfterSeconds) {
