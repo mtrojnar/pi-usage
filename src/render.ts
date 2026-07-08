@@ -301,6 +301,58 @@ export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: 
 	return lines;
 }
 
+// ───────── Report Builder ─────────
+
+interface UsageReportOptions {
+	fmt: (color: ThemeColor, text: string) => string;
+	bold: (text: string) => string;
+	useColor: boolean;
+	showUnconfigured: boolean;
+	helpLine?: string;
+}
+
+function buildUsageReportLines(
+	codex: CodexUsage | undefined,
+	go: OpenCodeGoUsage | undefined,
+	anthropic: AnthropicUsage | undefined,
+	copilot: CopilotUsage | undefined,
+	subscriptions: SubscriptionUsage[],
+	opts: UsageReportOptions,
+): string[] {
+	const { fmt, bold, useColor, showUnconfigured, helpLine } = opts;
+	const lines: string[] = [];
+
+	const notConfigured = (label: string) => {
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(fmt("dim", `${label} — not configured`));
+	};
+
+	lines.push(bold(fmt("accent", "⚡ Usage Limits")));
+
+	if (codex) lines.push(...renderCodexWindows(codex, fmt, useColor));
+	else if (showUnconfigured) notConfigured("Codex");
+
+	if (anthropic) lines.push(...renderAnthropicWindows(anthropic, fmt, useColor));
+	else if (showUnconfigured) notConfigured("Anthropic");
+
+	if (copilot) lines.push(...renderCopilotWindows(copilot, fmt, useColor));
+	else if (showUnconfigured) notConfigured("GitHub Copilot");
+
+	if (go) lines.push(...renderGoWindows(go, fmt, useColor));
+	else if (showUnconfigured) notConfigured("OpenCode Go");
+
+	for (const subscription of subscriptions) {
+		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
+	}
+
+	if (helpLine) {
+		lines.push(fmt("dim", "─".repeat(40)));
+		lines.push(helpLine);
+	}
+
+	return lines;
+}
+
 // ───────── Widget ─────────
 
 export function buildUsageWidget(
@@ -316,18 +368,12 @@ export function buildUsageWidget(
 		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
 	}
 
-	const lines: string[] = [];
-	const fmt = (color: ThemeColor, text: string) => theme.fg(color, text);
-
-	lines.push(theme.bold(fmt("accent", "⚡ Usage Limits")));
-
-	if (codex) lines.push(...renderCodexWindows(codex, fmt, true));
-	if (anthropic) lines.push(...renderAnthropicWindows(anthropic, fmt, true));
-	if (copilot) lines.push(...renderCopilotWindows(copilot, fmt, true));
-	if (go) lines.push(...renderGoWindows(go, fmt, true));
-	for (const subscription of subscriptions) {
-		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, true));
-	}
+	const lines = buildUsageReportLines(codex, go, anthropic, copilot, subscriptions, {
+		fmt: (color, text) => theme.fg(color, text),
+		bold: (text) => theme.bold(text),
+		useColor: true,
+		showUnconfigured: false,
+	});
 
 	return new Text(lines.join("\n"), 0, 0);
 }
@@ -342,47 +388,13 @@ export function buildStartupUsageMessage(
 	copilot?: CopilotUsage,
 	subscriptions: SubscriptionUsage[] = [],
 ): string {
-	const lines: string[] = [];
-	const fmt = (_color: ThemeColor, text: string) => text;
-
-	lines.push("⚡ Usage Limits");
-
-	if (codex) {
-		lines.push(...renderCodexWindows(codex, fmt, false));
-	} else {
-		lines.push("─".repeat(40));
-		lines.push("Codex — not configured");
-	}
-
-	if (anthropic) {
-		lines.push(...renderAnthropicWindows(anthropic, fmt, false));
-	} else {
-		lines.push("─".repeat(40));
-		lines.push("Anthropic — not configured");
-	}
-
-	if (copilot) {
-		lines.push(...renderCopilotWindows(copilot, fmt, false));
-	} else {
-		lines.push("─".repeat(40));
-		lines.push("GitHub Copilot — not configured");
-	}
-
-	if (go) {
-		lines.push(...renderGoWindows(go, fmt, false));
-	} else {
-		lines.push("─".repeat(40));
-		lines.push("OpenCode Go — not configured");
-	}
-
-	for (const subscription of subscriptions) {
-		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, false));
-	}
-
-	if (includeHelp) {
-		lines.push("─".repeat(40));
-		lines.push(USAGE_WIDGET_HELP);
-	}
+	const lines = buildUsageReportLines(codex, go, anthropic, copilot, subscriptions, {
+		fmt: (_color, text) => text,
+		bold: (text) => text,
+		useColor: false,
+		showUnconfigured: true,
+		helpLine: includeHelp ? USAGE_WIDGET_HELP : undefined,
+	});
 
 	return lines.join("\n");
 }
