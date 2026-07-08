@@ -1,14 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type {
-	AuthApiKeyCredential,
-	AuthJson,
-	CodexOAuthCredential,
-	OpenCodeGoQuotaConfig,
-	OpenCodeGoQuotaConfigState,
-	UsageContext,
-} from "./types.ts";
+import type { OpenCodeGoQuotaConfigState, UsageContext } from "./types.ts";
 
 // ───────── Constants ─────────
 
@@ -18,7 +11,6 @@ export const NO_USAGE_WIDGET_FLAG = "no-usage-widget";
 export const USAGE_CONFIG_FILE = "pi-usage.json";
 export const USAGE_WIDGET_HELP = `Widget disabled. Enable: add {"showWidget": true} to ${USAGE_CONFIG_FILE} or run with --${USAGE_WIDGET_FLAG}.`;
 export const CHECK_TIMEOUT_MS = 15_000;
-export const BODY_READ_TIMEOUT_MS = CHECK_TIMEOUT_MS;
 export const MAX_BODY_BYTES = 512_000;
 export const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 export const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -26,6 +18,7 @@ export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "opencode-go.json");
 export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
+export const OPENCODE_GO_PROVIDER = "opencode-go";
 export const ANTHROPIC_PROVIDER = "anthropic";
 export const ANTHROPIC_PROBE_MODEL = "claude-haiku-4-5";
 export const GITHUB_COPILOT_PROVIDER = "github-copilot";
@@ -73,10 +66,6 @@ export function agentDir(): string {
 	return path.resolve(dir);
 }
 
-export function authJsonPath(): string {
-	return path.join(agentDir(), "auth.json");
-}
-
 export function usageConfigPath(): string {
 	return path.join(agentDir(), USAGE_CONFIG_FILE);
 }
@@ -112,20 +101,6 @@ export function readUsageWidgetSetting(ctx?: UsageContext): boolean | undefined 
 		if (projectValue !== undefined) value = projectValue;
 	}
 	return value;
-}
-
-export function parseAuthJson(content: string | undefined): AuthJson {
-	return content ? JSON.parse(content) as AuthJson : {};
-}
-
-export function readAuthJson(): AuthJson | undefined {
-	try {
-		const authPath = authJsonPath();
-		if (!fs.existsSync(authPath)) return undefined;
-		return parseAuthJson(fs.readFileSync(authPath, "utf8"));
-	} catch {
-		return undefined;
-	}
 }
 
 export function dedupe(list: string[]): string[] {

@@ -7,6 +7,10 @@ export function truncate(text: string, maxLen: number): string {
 	return text.length <= maxLen ? text : text.slice(0, maxLen) + "…";
 }
 
+export function errorText(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
+}
+
 export function formatDuration(seconds: number): string {
 	if (seconds <= 0) return "now";
 	if (seconds < 60) return `${Math.round(seconds)}s`;

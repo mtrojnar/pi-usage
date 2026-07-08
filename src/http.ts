@@ -1,11 +1,18 @@
-import { BODY_READ_TIMEOUT_MS, MAX_BODY_BYTES } from "./config.ts";
+import * as os from "node:os";
+import { CHECK_TIMEOUT_MS, MAX_BODY_BYTES } from "./config.ts";
+import { truncate } from "./format.ts";
 
 // ───────── HTTP Helpers ─────────
 
-function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+/** Prevent a timer from keeping the process alive. */
+export function unrefTimer(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
 	if (typeof timer === "object" && timer && "unref" in timer && typeof timer.unref === "function") {
 		timer.unref();
 	}
+}
+
+export function piUsageUserAgent(): string {
+	return `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`;
 }
 
 export function createTimeoutSignal(
@@ -32,6 +39,16 @@ export function createTimeoutSignal(
 	};
 }
 
+/** Fetch with the standard check timeout, chained to an optional parent signal. */
+export async function fetchWithTimeout(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+	const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
+	try {
+		return await fetch(url, { ...init, signal: timeoutSignal.signal });
+	} finally {
+		timeoutSignal.cleanup();
+	}
+}
+
 export async function readResponseText(response: Response, signal?: AbortSignal): Promise<string> {
 	const reader = response.body?.getReader();
 	if (!reader) return "";
@@ -50,7 +67,7 @@ export async function readResponseText(response: Response, signal?: AbortSignal)
 	const timeout = setTimeout(() => {
 		timedOut = true;
 		reader.cancel().catch(() => {});
-	}, BODY_READ_TIMEOUT_MS);
+	}, CHECK_TIMEOUT_MS);
 	unrefTimer(timeout);
 
 	try {
@@ -95,4 +112,26 @@ export async function cancelResponseBody(response: Response): Promise<void> {
 	try {
 		await response.body?.cancel();
 	} catch { /* ignore */ }
+}
+
+/** Error message from a JSON error body, or the fallback when unparsable. */
+export async function readErrorMessage(response: Response, fallback: string, signal?: AbortSignal): Promise<string> {
+	try {
+		const body = await readResponseText(response, signal);
+		const parsed = JSON.parse(body);
+		return parsed?.error?.message ?? parsed?.message ?? parsed?.detail ?? fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+/** Short error detail from a response body, falling back to the HTTP status. */
+export async function readErrorDetail(response: Response, signal?: AbortSignal): Promise<string> {
+	const fallback = `HTTP ${response.status}`;
+	try {
+		const body = await readResponseText(response, signal);
+		return truncate(body, 160) || fallback;
+	} catch {
+		return fallback;
+	}
 }

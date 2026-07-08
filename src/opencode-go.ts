@@ -1,5 +1,3 @@
-import * as os from "node:os";
-import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type {
 	GoCheckModel,
 	GoModelStatus,
@@ -10,14 +8,13 @@ import type {
 	OpenCodeGoUsage,
 	SelectedModel,
 } from "./types.ts";
-import {
-	CHECK_TIMEOUT_MS,
-	OPENCODE_GO_DASHBOARD_URL_PREFIX,
-} from "./config.ts";
-import { clampPercent, truncate } from "./format.ts";
-import { cancelResponseBody, createTimeoutSignal, readResponseText } from "./http.ts";
-import { checkSubscriptionProviderUsage, getSubscriptionApiKey } from "./subscription-probe.ts";
-import type { SubscriptionProviderConfig } from "./subscription-probe.ts";
+import { OPENCODE_GO_DASHBOARD_URL_PREFIX, OPENCODE_GO_PROVIDER } from "./config.ts";
+import { clampPercent, errorText, truncate } from "./format.ts";
+import { headerValue, parseRetryAfterSeconds } from "./headers.ts";
+import { cancelResponseBody, fetchWithTimeout, piUsageUserAgent, readResponseText } from "./http.ts";
+import { isGoModelStatus, resolveProbeEndpoint } from "./probe.ts";
+import { checkSubscriptionProviderUsage, getSubscriptionApiKey, parseQuotaWindow } from "./subscription-probe.ts";
+import type { QuotaWindowKind, SubscriptionProviderConfig } from "./subscription-probe.ts";
 
 // ───────── Constants ─────────
 
@@ -37,10 +34,10 @@ export const DOCUMENTED_GO_MODELS: GoCheckModel[] = [
 ];
 
 const OPENCODE_GO_PROVIDER_CONFIG: SubscriptionProviderConfig = {
-	provider: "opencode-go",
+	provider: OPENCODE_GO_PROVIDER,
 	label: "OpenCode Go",
 	shortLabel: "Go",
-	authProviderIds: ["opencode-go", "opencode"],
+	authProviderIds: [OPENCODE_GO_PROVIDER, "opencode"],
 	envKeys: ["OPENCODE_API_KEY"],
 	supportedApis: ["openai-completions", "anthropic-messages"],
 	preferredModelIds: [PREFERRED_GO_PROBE_MODEL],
@@ -48,21 +45,7 @@ const OPENCODE_GO_PROVIDER_CONFIG: SubscriptionProviderConfig = {
 	quotaHeaderPrefixes: ["opencode-go", "opencode"],
 };
 
-export const GO_COLOR_MAP: Record<GoModelStatus, ThemeColor> = {
-	available: "success",
-	rate_limited: "warning",
-	credits_error: "error",
-	error: "warning",
-	no_key: "dim",
-};
-
-export const GO_STATUS_TEXT: Record<GoModelStatus, string> = {
-	available: "available",
-	rate_limited: "rate limited",
-	credits_error: "credits exhausted",
-	error: "error",
-	no_key: "no key",
-};
+const GO_QUOTA_HEADER_PREFIXES = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes!;
 
 // ───────── Auth Helpers ─────────
 
@@ -74,7 +57,7 @@ export function getOpenCodeApiKey(): string | undefined {
 
 export function parseOpenCodeGoUsageWindow(
 	html: string,
-	key: "rolling" | "weekly" | "monthly",
+	key: QuotaWindowKind,
 ): { usedPercent: number; remainingPercent: number; resetAfterSeconds: number; resetAt: number } | undefined {
 	const objectMatch = new RegExp(`${key}Usage:\\$R\\[\\d+\\]=\\{([^}]*)\\}`).exec(html);
 	const body = objectMatch?.[1];
@@ -121,16 +104,10 @@ export function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuot
 	};
 }
 
+// ───────── Message / Endpoint Helpers ─────────
+
 export function resolveModelEndpoint(baseUrl: string, api: GoProbeApi): string {
-	const normalized = baseUrl.replace(/\/+$/, "");
-	if (api === "anthropic-messages") {
-		if (normalized.endsWith("/messages")) return normalized;
-		if (normalized.endsWith("/v1")) return `${normalized}/messages`;
-		return `${normalized}/v1/messages`;
-	}
-	if (normalized.endsWith("/chat/completions")) return normalized;
-	if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
-	return `${normalized}/v1/chat/completions`;
+	return resolveProbeEndpoint(baseUrl, api, { insertV1: true });
 }
 
 export function isGlobalGoLimit(message: string): boolean {
@@ -142,70 +119,15 @@ export function isPerModelUnavailable(_status: number, message: string): boolean
 	return /model.*(disabled|not.*found|unsupported|unavailable)|disabled.*model/i.test(message);
 }
 
-function headerValue(headers: Record<string, string>, name: string): string | undefined {
-	return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
-}
+// ───────── Passive Header Parsing ─────────
 
-function parseOptionalNumber(headers: Record<string, string>, names: string[]): number | undefined {
-	for (const name of names) {
-		const value = headerValue(headers, name);
-		if (value === undefined || value === "") continue;
-		const parsed = Number(value);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return undefined;
-}
-
-function parseRetryAfterSeconds(value: string | undefined): number {
-	if (!value) return 0;
-	const seconds = Number(value);
-	if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds));
-	const timestamp = Date.parse(value);
-	return Number.isFinite(timestamp) ? Math.max(0, Math.round((timestamp - Date.now()) / 1000)) : 0;
-}
-
-function isGoModelStatus(value: string | undefined): value is GoModelStatus {
-	return value === "available" || value === "rate_limited" || value === "credits_error" || value === "error" || value === "no_key";
-}
-
-function goQuotaHeaderNames(window: "rolling" | "weekly" | "monthly", metric: string): string[] {
-	return [
-		`x-opencode-go-${window}-${metric}`,
-		`x-opencode-go-quota-${window}-${metric}`,
-		`x-opencode-${window}-${metric}`,
-	];
-}
-
-function parsePassiveQuotaWindow(headers: Record<string, string>, window: "rolling" | "weekly" | "monthly"): {
-	usedPercent?: number;
-	remainingPercent?: number;
-	resetAfterSeconds?: number;
-	resetAt?: number;
-	hasHeaders: boolean;
-} {
-	const used = parseOptionalNumber(headers, goQuotaHeaderNames(window, "used-percent"));
-	const remaining = parseOptionalNumber(headers, goQuotaHeaderNames(window, "remaining-percent"));
-	const resetAfter = parseOptionalNumber(headers, [
-		...goQuotaHeaderNames(window, "reset-after-seconds"),
-		...goQuotaHeaderNames(window, "reset-after"),
-	]);
-	const resetAt = parseOptionalNumber(headers, goQuotaHeaderNames(window, "reset-at"));
-
-	return {
-		usedPercent: used !== undefined ? clampPercent(used) : undefined,
-		remainingPercent: remaining !== undefined
-			? clampPercent(remaining)
-			: used !== undefined
-				? clampPercent(100 - used)
-				: undefined,
-		resetAfterSeconds: resetAfter !== undefined ? Math.max(0, Math.round(resetAfter)) : undefined,
-		resetAt: resetAt !== undefined ? Math.max(0, Math.round(resetAt)) : undefined,
-		hasHeaders: used !== undefined || remaining !== undefined || resetAfter !== undefined || resetAt !== undefined,
-	};
-}
-
-function hasOpenCodeGoPassiveHeaders(headers: Record<string, string>): boolean {
-	return Object.keys(headers).some((name) => name.toLowerCase().startsWith("x-opencode-go-"));
+/** True when any quota window has usage data. */
+export function hasGoQuotaData(
+	usage: { rollingUsedPercent?: number; weeklyUsedPercent?: number; monthlyUsedPercent?: number } | undefined,
+): boolean {
+	return usage?.rollingUsedPercent !== undefined
+		|| usage?.weeklyUsedPercent !== undefined
+		|| usage?.monthlyUsedPercent !== undefined;
 }
 
 export function parseOpenCodeGoUsageHeaders(
@@ -218,11 +140,12 @@ export function parseOpenCodeGoUsageHeaders(
 	const headerStatus = isGoModelStatus(statusHeader) ? statusHeader : undefined;
 	const responseModel = headerValue(headers, "x-opencode-go-model") ?? modelId;
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
-	const rolling = parsePassiveQuotaWindow(headers, "rolling");
-	const weekly = parsePassiveQuotaWindow(headers, "weekly");
-	const monthly = parsePassiveQuotaWindow(headers, "monthly");
-	const hasQuotaHeaders = rolling.hasHeaders || weekly.hasHeaders || monthly.hasHeaders;
-	const hasPassiveSignal = hasOpenCodeGoPassiveHeaders(headers) || hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && responseModel);
+	const rolling = parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, "rolling").window;
+	const weekly = parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, "weekly").window;
+	const monthly = parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, "monthly").window;
+	const hasQuotaHeaders = Boolean(rolling || weekly || monthly);
+	const hasGoHeaders = Object.keys(headers).some((name) => name.toLowerCase().startsWith("x-opencode-go-"));
+	const hasPassiveSignal = hasGoHeaders || hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && !!responseModel);
 	if (!hasPassiveSignal) return undefined;
 
 	const inferredStatus: GoModelStatus = headerStatus
@@ -235,7 +158,6 @@ export function parseOpenCodeGoUsageHeaders(
 					: "available");
 	const rateLimited = inferredStatus === "rate_limited";
 	const available = inferredStatus === "available";
-	const retryMessage = retryAfterSeconds > 0 ? `Rate limited; retry after ${retryAfterSeconds}s` : "Rate limited";
 
 	return {
 		available,
@@ -246,91 +168,64 @@ export function parseOpenCodeGoUsageHeaders(
 		totalModels: previous?.totalModels,
 		quotaConfigured: hasQuotaHeaders ? true : previous?.quotaConfigured,
 		quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
-		rollingUsedPercent: rolling.usedPercent ?? previous?.rollingUsedPercent,
-		rollingRemainingPercent: rolling.remainingPercent ?? previous?.rollingRemainingPercent,
-		rollingResetAfterSeconds: rolling.resetAfterSeconds ?? previous?.rollingResetAfterSeconds,
-		rollingResetAt: rolling.resetAt ?? previous?.rollingResetAt,
-		weeklyUsedPercent: weekly.usedPercent ?? previous?.weeklyUsedPercent,
-		weeklyRemainingPercent: weekly.remainingPercent ?? previous?.weeklyRemainingPercent,
-		weeklyResetAfterSeconds: weekly.resetAfterSeconds ?? previous?.weeklyResetAfterSeconds,
-		weeklyResetAt: weekly.resetAt ?? previous?.weeklyResetAt,
-		monthlyUsedPercent: monthly.usedPercent ?? previous?.monthlyUsedPercent,
-		monthlyRemainingPercent: monthly.remainingPercent ?? previous?.monthlyRemainingPercent,
-		monthlyResetAfterSeconds: monthly.resetAfterSeconds ?? previous?.monthlyResetAfterSeconds,
-		monthlyResetAt: monthly.resetAt ?? previous?.monthlyResetAt,
+		rollingUsedPercent: rolling?.usedPercent ?? previous?.rollingUsedPercent,
+		rollingRemainingPercent: rolling?.remainingPercent ?? previous?.rollingRemainingPercent,
+		rollingResetAfterSeconds: rolling?.resetAfterSeconds ?? previous?.rollingResetAfterSeconds,
+		rollingResetAt: rolling?.resetAt ?? previous?.rollingResetAt,
+		weeklyUsedPercent: weekly?.usedPercent ?? previous?.weeklyUsedPercent,
+		weeklyRemainingPercent: weekly?.remainingPercent ?? previous?.weeklyRemainingPercent,
+		weeklyResetAfterSeconds: weekly?.resetAfterSeconds ?? previous?.weeklyResetAfterSeconds,
+		weeklyResetAt: weekly?.resetAt ?? previous?.weeklyResetAt,
+		monthlyUsedPercent: monthly?.usedPercent ?? previous?.monthlyUsedPercent,
+		monthlyRemainingPercent: monthly?.remainingPercent ?? previous?.monthlyRemainingPercent,
+		monthlyResetAfterSeconds: monthly?.resetAfterSeconds ?? previous?.monthlyResetAfterSeconds,
+		monthlyResetAt: monthly?.resetAt ?? previous?.monthlyResetAt,
 		quotaError: hasQuotaHeaders ? undefined : previous?.quotaError,
 		errorMessage: rateLimited
-			? retryMessage
-			: inferredStatus === "credits_error"
+			? retryAfterSeconds > 0 ? `Rate limited; retry after ${retryAfterSeconds}s` : "Rate limited"
+			: inferredStatus === "credits_error" || inferredStatus === "error"
 				? `HTTP ${status}`
-				: inferredStatus === "error"
-					? `HTTP ${status}`
-					: undefined,
+				: undefined,
 		error: undefined,
 	};
 }
 
+// ───────── Dashboard Quota Fetch ─────────
 
 async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig, signal?: AbortSignal): Promise<OpenCodeGoQuotaResult> {
-	const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
+	const base: OpenCodeGoQuotaResult = { configured: true, source: config.source };
 
 	try {
-		const response = await fetch(
+		const response = await fetchWithTimeout(
 			`${OPENCODE_GO_DASHBOARD_URL_PREFIX}/${encodeURIComponent(config.workspaceId)}/go`,
 			{
 				headers: {
 					"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 					"Cookie": `auth=${config.authCookie}`,
-					"User-Agent": `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`,
+					"User-Agent": piUsageUserAgent(),
 				},
-				signal: timeoutSignal.signal,
 			},
+			signal,
 		);
 
 		if (!response.ok) {
 			await cancelResponseBody(response);
-			return {
-				configured: true,
-				source: config.source,
-				error: `OpenCode Go quota dashboard returned HTTP ${response.status}`,
-			};
+			return { ...base, error: `OpenCode Go quota dashboard returned HTTP ${response.status}` };
 		}
 
-		const html = await readResponseText(response, signal);
-		const parsed = parseOpenCodeGoDashboardUsage(html);
-		if (parsed.error) {
-			return {
-				configured: true,
-				source: config.source,
-				error: parsed.error,
-			};
-		}
-
-		return {
-			configured: true,
-			source: config.source,
-			...parsed,
-		};
+		return { ...base, ...parseOpenCodeGoDashboardUsage(await readResponseText(response, signal)) };
 	} catch (e: unknown) {
-		return {
-			configured: true,
-			source: config.source,
-			error: e instanceof Error ? e.message : String(e),
-		};
-	} finally {
-		timeoutSignal.cleanup();
+		return { ...base, error: errorText(e) };
 	}
 }
 
 async function checkOpenCodeGoQuota(configState: OpenCodeGoQuotaConfigState, signal?: AbortSignal): Promise<OpenCodeGoQuotaResult> {
-	if (configState.error) {
-		return { configured: false, error: configState.error };
-	}
-	if (!configState.config) {
-		return { configured: false };
-	}
+	if (configState.error) return { configured: false, error: configState.error };
+	if (!configState.config) return { configured: false };
 	return fetchOpenCodeGoQuota(configState.config, signal);
 }
+
+// ───────── Model Probing ─────────
 
 async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<OpenCodeGoUsage> {
 	const result = await checkSubscriptionProviderUsage(OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal, preferredModel);
@@ -348,71 +243,49 @@ async function checkOpenCodeGoModels(apiKey: string | undefined, signal?: AbortS
 
 // ───────── Public API ─────────
 
+/** Quota fields shared by the dashboard-only and probe result shapes. */
+function quotaFields(quota: OpenCodeGoQuotaResult): Partial<OpenCodeGoUsage> {
+	return {
+		quotaConfigured: quota.configured,
+		quotaSource: quota.source,
+		rollingUsedPercent: quota.rollingUsedPercent,
+		rollingRemainingPercent: quota.rollingRemainingPercent,
+		rollingResetAfterSeconds: quota.rollingResetAfterSeconds,
+		rollingResetAt: quota.rollingResetAt,
+		weeklyUsedPercent: quota.weeklyUsedPercent,
+		weeklyRemainingPercent: quota.weeklyRemainingPercent,
+		weeklyResetAfterSeconds: quota.weeklyResetAfterSeconds,
+		weeklyResetAt: quota.weeklyResetAt,
+		monthlyUsedPercent: quota.monthlyUsedPercent,
+		monthlyRemainingPercent: quota.monthlyRemainingPercent,
+		monthlyResetAfterSeconds: quota.monthlyResetAfterSeconds,
+		monthlyResetAt: quota.monthlyResetAt,
+	};
+}
+
 export async function checkOpenCodeGoUsage(
 	apiKey: string | undefined,
 	configState: OpenCodeGoQuotaConfigState,
 	signal?: AbortSignal,
 	preferredModel?: SelectedModel,
 ): Promise<OpenCodeGoUsage> {
-	const quotaCheck = await checkOpenCodeGoQuota(configState, signal);
-	if (
-		quotaCheck.rollingUsedPercent !== undefined ||
-		quotaCheck.weeklyUsedPercent !== undefined ||
-		quotaCheck.monthlyUsedPercent !== undefined
-	) {
-		const quotaExhausted = (
-			quotaCheck.rollingUsedPercent !== undefined && quotaCheck.rollingUsedPercent >= 100
-		) || (
-			quotaCheck.weeklyUsedPercent !== undefined && quotaCheck.weeklyUsedPercent >= 100
-		) || (
-			quotaCheck.monthlyUsedPercent !== undefined && quotaCheck.monthlyUsedPercent >= 100
-		);
+	const quota = await checkOpenCodeGoQuota(configState, signal);
+
+	// Dashboard quota is authoritative; skip the model probe when it is available.
+	if (hasGoQuotaData(quota)) {
+		const exhausted = [quota.rollingUsedPercent, quota.weeklyUsedPercent, quota.monthlyUsedPercent]
+			.some((percent) => percent !== undefined && percent >= 100);
 		return {
-			available: !quotaExhausted,
-			status: quotaExhausted ? "rate_limited" : "available",
-			quotaConfigured: quotaCheck.configured,
-			quotaSource: quotaCheck.source,
-			rollingUsedPercent: quotaCheck.rollingUsedPercent,
-			rollingRemainingPercent: quotaCheck.rollingRemainingPercent,
-			rollingResetAfterSeconds: quotaCheck.rollingResetAfterSeconds,
-			rollingResetAt: quotaCheck.rollingResetAt,
-			weeklyUsedPercent: quotaCheck.weeklyUsedPercent,
-			weeklyRemainingPercent: quotaCheck.weeklyRemainingPercent,
-			weeklyResetAfterSeconds: quotaCheck.weeklyResetAfterSeconds,
-			weeklyResetAt: quotaCheck.weeklyResetAt,
-			monthlyUsedPercent: quotaCheck.monthlyUsedPercent,
-			monthlyRemainingPercent: quotaCheck.monthlyRemainingPercent,
-			monthlyResetAfterSeconds: quotaCheck.monthlyResetAfterSeconds,
-			monthlyResetAt: quotaCheck.monthlyResetAt,
+			available: !exhausted,
+			status: exhausted ? "rate_limited" : "available",
+			...quotaFields(quota),
 		};
 	}
 
 	if (signal?.aborted) {
-		return {
-			available: false,
-			status: "error",
-			error: "OpenCode Go check aborted",
-		};
+		return { available: false, status: "error", error: "OpenCode Go check aborted" };
 	}
 
 	const modelCheck = await checkOpenCodeGoModels(apiKey, signal, preferredModel);
-
-	return {
-		...modelCheck,
-		quotaConfigured: quotaCheck.configured,
-		quotaSource: quotaCheck.source,
-		rollingUsedPercent: quotaCheck.rollingUsedPercent,
-		rollingRemainingPercent: quotaCheck.rollingRemainingPercent,
-		rollingResetAfterSeconds: quotaCheck.rollingResetAfterSeconds,
-		rollingResetAt: quotaCheck.rollingResetAt,
-		weeklyUsedPercent: quotaCheck.weeklyUsedPercent,
-		weeklyRemainingPercent: quotaCheck.weeklyRemainingPercent,
-		weeklyResetAfterSeconds: quotaCheck.weeklyResetAfterSeconds,
-		weeklyResetAt: quotaCheck.weeklyResetAt,
-		monthlyUsedPercent: quotaCheck.monthlyUsedPercent,
-		monthlyRemainingPercent: quotaCheck.monthlyRemainingPercent,
-		monthlyResetAfterSeconds: quotaCheck.monthlyResetAfterSeconds,
-		monthlyResetAt: quotaCheck.monthlyResetAt,
-		quotaError: quotaCheck.error,
-	};
+	return { ...modelCheck, ...quotaFields(quota), quotaError: quota.error };
 }
