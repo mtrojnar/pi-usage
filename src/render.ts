@@ -16,6 +16,19 @@ import {
 	usageColor,
 } from "./format.ts";
 
+// ───────── Shared Window Helpers ─────────
+
+/** Consistent " resets in <duration>" / " resets now" suffix from a reset timestamp or countdown. */
+export function resetPhrase(resetAt?: number, resetAfterSeconds?: number): string {
+	const duration = resetAt !== undefined && resetAt > 0
+		? formatResetTime(resetAt)
+		: resetAfterSeconds !== undefined && resetAfterSeconds > 0
+			? formatDuration(resetAfterSeconds)
+			: undefined;
+	if (!duration) return "";
+	return duration === "now" ? " resets now" : ` resets in ${duration}`;
+}
+
 // ───────── Rendering: Codex Windows ─────────
 
 export function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, text: string) => string, useColor: boolean): string[] {
@@ -31,49 +44,23 @@ export function renderCodexWindows(codex: CodexUsage, fmt: (color: ThemeColor, t
 		? ` [${codex.activeLimit}]`
 		: "";
 
-	const p5 = codex.primaryUsedPercent;
-	const p5Window = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
-	const p5Reset = codex.primaryResetAt > 0
-		? ` resets ${formatResetTime(codex.primaryResetAt)}`
-		: codex.primaryResetAfterSeconds > 0
-			? ` resets in ${formatDuration(codex.primaryResetAfterSeconds)}`
-			: "";
-	const pW = codex.secondaryUsedPercent;
-	const pWReset = codex.secondaryResetAt > 0
-		? ` resets ${formatResetTime(codex.secondaryResetAt)}`
-		: codex.secondaryResetAfterSeconds > 0
-			? ` resets in ${formatDuration(codex.secondaryResetAfterSeconds)}`
-			: "";
+	const primaryLabel = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
+
+	const codexRow = (label: string, percent: number, resetAt?: number, resetAfterSeconds?: number): string => {
+		const reset = resetPhrase(resetAt, resetAfterSeconds);
+		if (useColor) {
+			const color = usageColor(percent);
+			return `  ${label.padEnd(6)} ${fmt(color, progressBar(percent))} ${fmt(color, `${percent.toFixed(0)}%`)}${fmt("dim", reset)}`;
+		}
+		return `  ${label.padEnd(6)} ${progressBar(percent)} ${percent.toFixed(0)}%${reset}`;
+	};
 
 	lines.push(fmt("dim", "─".repeat(40)));
 	lines.push(`${fmt("accent", "Codex")}${fmt("dim", planLabel + limitLabel)}`);
-
-	if (useColor) {
-		const p5Color = usageColor(p5);
-		const pWColor = usageColor(pW);
-		const p5Bar = progressBar(p5);
-		const pWBar = progressBar(pW);
-		lines.push(`  ${p5Window}  ${fmt(p5Color, p5Bar)} ${fmt(p5Color, `${p5.toFixed(0)}%`)}${fmt("dim", p5Reset)}`);
-		lines.push(`  week  ${fmt(pWColor, pWBar)} ${fmt(pWColor, `${pW.toFixed(0)}%`)}${fmt("dim", pWReset)}`);
-	} else {
-		lines.push(`  ${p5Window}  ${progressBar(p5)} ${p5.toFixed(0)}%${p5Reset}`);
-		lines.push(`  week  ${progressBar(pW)} ${pW.toFixed(0)}%${pWReset}`);
-	}
-
+	lines.push(codexRow(primaryLabel, codex.primaryUsedPercent, codex.primaryResetAt, codex.primaryResetAfterSeconds));
+	lines.push(codexRow("week", codex.secondaryUsedPercent, codex.secondaryResetAt, codex.secondaryResetAfterSeconds));
 	if (codex.codeReviewUsedPercent !== undefined) {
-		const pC = codex.codeReviewUsedPercent;
-		const pCReset = codex.codeReviewResetAt
-			? ` resets ${formatResetTime(codex.codeReviewResetAt)}`
-			: codex.codeReviewResetAfterSeconds
-				? ` resets in ${formatDuration(codex.codeReviewResetAfterSeconds)}`
-				: "";
-		if (useColor) {
-			const pCColor = usageColor(pC);
-			const pCBar = progressBar(pC);
-			lines.push(`  review ${fmt(pCColor, pCBar)} ${fmt(pCColor, `${pC.toFixed(0)}%`)}${fmt("dim", pCReset)}`);
-		} else {
-			lines.push(`  review ${progressBar(pC)} ${pC.toFixed(0)}%${pCReset}`);
-		}
+		lines.push(codexRow("review", codex.codeReviewUsedPercent, codex.codeReviewResetAt, codex.codeReviewResetAfterSeconds));
 	}
 
 	if (codex.creditsHasCredits && codex.creditsBalance) {
@@ -95,11 +82,7 @@ function renderAnthropicLimitWindow(
 	useColor: boolean,
 ): string | undefined {
 	if (!window || window.usedPercent === undefined) return undefined;
-	const reset = window.resetAt
-		? ` resets ${formatResetTime(window.resetAt)}`
-		: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
-			? ` resets in ${formatDuration(window.resetAfterSeconds)}`
-			: "";
+	const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
 	const remaining = window.remainingPercent !== undefined
 		? ` / ${window.remainingPercent.toFixed(0)}% left`
 		: "";
@@ -156,11 +139,7 @@ function renderCopilotLimitWindow(
 	useColor: boolean,
 ): string | undefined {
 	if (!window || window.usedPercent === undefined) return undefined;
-	const reset = window.resetAt
-		? ` resets ${formatResetTime(window.resetAt)}`
-		: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
-			? ` resets in ${formatDuration(window.resetAfterSeconds)}`
-			: "";
+	const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
 	const remaining = window.remainingPercent !== undefined
 		? ` / ${window.remainingPercent.toFixed(0)}% left`
 		: "";
@@ -228,11 +207,7 @@ export function renderGoWindows(go: OpenCodeGoUsage, fmt: (color: ThemeColor, te
 	];
 	for (const w of goWindows) {
 		if (w.used === undefined) continue;
-		const reset = w.resetAt
-			? ` resets ${formatResetTime(w.resetAt)}`
-			: w.resetAfterSeconds !== undefined && w.resetAfterSeconds > 0
-				? ` resets in ${formatDuration(w.resetAfterSeconds)}`
-				: "";
+		const reset = resetPhrase(w.resetAt, w.resetAfterSeconds);
 		const remaining = w.remaining !== undefined
 			? ` / ${w.remaining.toFixed(0)}% left`
 			: "";
@@ -272,11 +247,7 @@ export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: 
 	];
 	for (const { label, window } of windows) {
 		if (window?.usedPercent === undefined) continue;
-		const reset = window.resetAt
-			? ` resets ${formatResetTime(window.resetAt)}`
-			: window.resetAfterSeconds !== undefined && window.resetAfterSeconds > 0
-				? ` resets in ${formatDuration(window.resetAfterSeconds)}`
-				: "";
+		const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
 		const remaining = window.remainingPercent !== undefined
 			? ` / ${window.remainingPercent.toFixed(0)}% left`
 			: "";

@@ -233,18 +233,18 @@ Codex (plus) [premium]
   week  ████████████░░░░░░░░ 62% resets in 3.8d
 ────────────────────────────────────────
 ✓ Anthropic (Claude Pro/Max) — available
-  requests ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets 1m
-  tokens   ████████░░░░░░░░░░░░ 40% used / 60% left resets 1m
+  requests ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets in 1m
+  tokens   ████████░░░░░░░░░░░░ 40% used / 60% left resets in 1m
   working: claude-haiku-4-5
 ────────────────────────────────────────
 ✓ GitHub Copilot — available
-  requests ██░░░░░░░░░░░░░░░░░░ 10% used / 90% left resets 1h
+  requests ██░░░░░░░░░░░░░░░░░░ 10% used / 90% left resets in 1h
   working: gpt-5-mini
 ────────────────────────────────────────
 ✓ OpenCode Go — available
-  rolling ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets 3.2h
-  week    ████████░░░░░░░░░░░░ 40% used / 60% left resets 4.8d
-  month   ████████████░░░░░░░░ 60% used / 40% left resets 12.4d
+  rolling ████░░░░░░░░░░░░░░░░ 20% used / 80% left resets in 3.2h
+  week    ████████░░░░░░░░░░░░ 40% used / 60% left resets in 4.8d
+  month   ████████████░░░░░░░░ 60% used / 40% left resets in 12.4d
   working: glm-5.1
 ────────────────────────────────────────
 ✓ OpenCode Zen — available
