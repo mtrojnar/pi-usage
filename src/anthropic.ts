@@ -16,6 +16,7 @@ import {
 	hasHeaderPrefix,
 	headerValue,
 	parseOptionalNumber,
+	parseResetAtSeconds,
 	parseRetryAfterSeconds,
 	resetAfterFromAt,
 	retryResetFields,
@@ -89,26 +90,10 @@ export async function getAnthropicAuth(): Promise<AnthropicAuth | undefined> {
 
 // ───────── Header Parsing ─────────
 
-export function parseAnthropicResetAt(value: string | undefined): number {
-	if (!value) return 0;
-	const trimmed = value.trim();
-	if (!trimmed) return 0;
-
-	const numeric = Number(trimmed);
-	if (Number.isFinite(numeric) && numeric > 0) {
-		// Unified rate-limit reset headers are unix seconds; tolerate ms too.
-		if (numeric > 1_000_000_000_000) return Math.round(numeric / 1000);
-		if (numeric > 1_000_000_000) return Math.round(numeric);
-	}
-
-	const timestamp = Date.parse(trimmed);
-	return Number.isFinite(timestamp) ? Math.round(timestamp / 1000) : 0;
-}
-
 function parseUnifiedWindow(headers: Record<string, string>, key: "5h" | "7d"): AnthropicUsageWindow | undefined {
 	const utilization = parseOptionalNumber(headers, `anthropic-ratelimit-unified-${key}-utilization`);
 	if (utilization === undefined) return undefined; // no percent → nothing to display
-	const resetAt = parseAnthropicResetAt(headerValue(headers, `anthropic-ratelimit-unified-${key}-reset`));
+	const resetAt = parseResetAtSeconds(headerValue(headers, `anthropic-ratelimit-unified-${key}-reset`));
 	return {
 		// Header utilization is a 0..1 fraction; scale to a percentage.
 		utilizationPercent: clampPercent(utilization * 100),
@@ -178,7 +163,7 @@ function windowFromApi(window: AnthropicUsageApiWindow | null | undefined): Anth
 	if (!window) return undefined;
 	const utilization = Number(window.utilization);
 	if (!Number.isFinite(utilization)) return undefined;
-	const resetAt = parseAnthropicResetAt(window.resets_at ?? undefined);
+	const resetAt = parseResetAtSeconds(window.resets_at ?? undefined);
 	return {
 		utilizationPercent: clampPercent(utilization),
 		resetAt: resetAt > 0 ? resetAt : undefined,

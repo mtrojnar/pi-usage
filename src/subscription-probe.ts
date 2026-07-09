@@ -53,11 +53,7 @@ export function getSubscriptionApiKey(config: SubscriptionProviderConfig): strin
 	return envApiKey(...(config.envKeys ?? []))?.key;
 }
 
-// ───────── Endpoint / Model Helpers ─────────
-
-export function resolveSubscriptionEndpoint(baseUrl: string, api: SubscriptionProbeApi): string {
-	return resolveProbeEndpoint(baseUrl, api);
-}
+// ───────── Model Helpers ─────────
 
 export async function getSubscriptionCheckModels(
 	config: SubscriptionProviderConfig,
@@ -78,7 +74,7 @@ export async function getSubscriptionCheckModels(
 			modelsById.set(model.id, {
 				id: model.id,
 				api,
-				endpoint: resolveSubscriptionEndpoint(model.baseUrl, api),
+				endpoint: resolveProbeEndpoint(model.baseUrl, api),
 				costRank: modelCostRank(model, 0),
 				headers: model.headers,
 			});
@@ -93,7 +89,7 @@ export async function getSubscriptionCheckModels(
 		modelsById.set(preferredModel.id, {
 			id: preferredModel.id,
 			api: preferredApi,
-			endpoint: resolveSubscriptionEndpoint(preferredModel.baseUrl, preferredApi),
+			endpoint: resolveProbeEndpoint(preferredModel.baseUrl, preferredApi),
 			costRank: -1,
 		});
 	}
@@ -297,7 +293,7 @@ export async function checkSubscriptionProviderUsage(
 			isSubscriptionModelUnavailable(message)
 				? "unavailable"
 				: status === 429 || status === 402 || isSubscriptionQuotaMessage(message)
-					? status === 402 || /credit|balance|quota exhausted|quota.*exhausted/i.test(message)
+					? status === 402 || /credit|balance|quota.*exhausted/i.test(message)
 						? "credits_error"
 						: "rate_limited"
 					: "failed",

@@ -327,8 +327,8 @@ OpenCode Go does not currently expose a public usage/balance API. pi-usage scrap
 
 If the dashboard scrape is not configured or fails, pi-usage falls back to probing models with minimal requests (`max_tokens: 1`) and checking for:
 - **200 OK** → model is available
-- **429** → rate limited
-- **401/403** → credits error or auth issue
+- **429** or quota/limit errors → rate limited
+- **402** or credit/balance errors → credits exhausted
 
 It builds the probe list from OpenCode's documented Go models, then adds any extra `opencode-go` models from pi's installed registry. It probes the preferred cheap model (`qwen3.5-plus`) first, only tries another model when the response clearly says that model is unavailable, and stops on rate-limit, auth/quota, or ambiguous errors.
 

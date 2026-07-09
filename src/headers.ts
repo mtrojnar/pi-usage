@@ -15,6 +15,18 @@ export function hasHeaderPrefix(headers: Record<string, string>, prefix: string)
 	return Object.keys(headers).some((name) => name.toLowerCase().startsWith(normalizedPrefix));
 }
 
+/** Finite number from a single header value, or the fallback. */
+export function parseHeaderNumber(value: string | undefined, fallback: number): number {
+	if (value === undefined || value === "") return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** Case-insensitive "true" from a single header value. */
+export function parseHeaderBool(value: string | undefined): boolean {
+	return value?.toLowerCase() === "true";
+}
+
 /** First finite number among the named headers, or undefined. */
 export function parseOptionalNumber(headers: Record<string, string>, ...names: string[]): number | undefined {
 	for (const name of names) {

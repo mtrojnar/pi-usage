@@ -1,6 +1,6 @@
 /**
  * Unit tests for pi-usage core parsing and formatting helpers.
- * Run with: node --test index.test.ts
+ * Run with: npm test
  */
 
 import assert from "node:assert/strict";
@@ -10,13 +10,22 @@ import {
 	clampPercent,
 	formatDuration,
 	formatResetTime,
-	parseHeaderBool,
-	parseHeaderNumber,
 	progressBar,
 	statusIcon,
 	truncate,
 	usageColor,
 } from "./src/format.ts";
+import {
+	hasHeaderPrefix,
+	headerValue,
+	parseHeaderBool,
+	parseHeaderNumber,
+	parseOptionalNumber,
+	parseResetAtSeconds,
+	parseRetryAfterSeconds,
+	resetAfterFromAt,
+	retryResetFields,
+} from "./src/headers.ts";
 import {
 	configPathCandidates,
 	dedupe,
@@ -42,25 +51,21 @@ import {
 	readResponseText,
 } from "./src/http.ts";
 import {
-	codexUsageHasData,
-	anthropicUsageHasData,
-	copilotUsageHasData,
-	footerResetDuration,
-	footerUsageColor,
-	goUsageHasData,
-	subscriptionUsageHasData,
 	buildStartupUsageMessage,
 	buildUsageWidget,
+	codexUsageHasData,
+	footerUsageColor,
 	renderAnthropicWindows,
 	renderCodexWindows,
 	renderCopilotWindows,
 	renderGoWindows,
 	renderSubscriptionWindows,
+	resetDuration,
+	usageHasData,
 } from "./src/render.ts";
 import {
 	checkAnthropicUsageFromUsageApi,
 	isAnthropicModelUnavailable,
-	parseAnthropicResetAt,
 	parseAnthropicUsageHeaders,
 } from "./src/anthropic.ts";
 import {
@@ -68,30 +73,67 @@ import {
 	isCopilotModelUnavailable,
 	isCopilotQuotaMessage,
 	normalizeCopilotDomain,
-	parseCopilotResetAt,
 	parseCopilotUsageHeaders,
 } from "./src/copilot.ts";
 import {
-	isGlobalGoLimit,
-	isPerModelUnavailable,
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
 	parseOpenCodeGoUsageWindow,
-	resolveModelEndpoint,
 } from "./src/opencode-go.ts";
+import { resolveProbeEndpoint } from "./src/probe.ts";
 import {
 	getSubscriptionCheckModels,
 	isSubscriptionModelUnavailable,
 	isSubscriptionQuotaMessage,
 	parseSubscriptionUsageHeaders,
-	resolveSubscriptionEndpoint,
+	type SubscriptionProviderConfig,
 } from "./src/subscription-probe.ts";
 import type {
 	AnthropicUsage,
+	CodexUsage,
 	CopilotUsage,
 	OpenCodeGoUsage,
 	SubscriptionUsage,
 } from "./src/types.ts";
+
+// ───────── Test Fixtures ─────────
+
+/** Plain formatter used where color output is irrelevant. */
+const identity = (_color: string, text: string): string => text;
+
+/** Complete CodexUsage with quiet defaults; override what a test cares about. */
+function makeCodexUsage(overrides: Partial<CodexUsage> = {}): CodexUsage {
+	return {
+		planType: "unknown",
+		activeLimit: "normal",
+		primaryUsedPercent: 0,
+		secondaryUsedPercent: 0,
+		primaryWindowMinutes: 300,
+		secondaryWindowMinutes: 10080,
+		primaryResetAfterSeconds: 0,
+		secondaryResetAfterSeconds: 0,
+		primaryResetAt: 0,
+		secondaryResetAt: 0,
+		primaryOverSecondaryLimitPercent: 0,
+		creditsHasCredits: false,
+		creditsBalance: "",
+		creditsUnlimited: false,
+		source: "usage_api",
+		...overrides,
+	};
+}
+
+/** Minimal available OpenCodeGoUsage with provider identity filled in. */
+function makeGoUsage(overrides: Partial<OpenCodeGoUsage> = {}): OpenCodeGoUsage {
+	return {
+		provider: "opencode-go",
+		label: "OpenCode Go",
+		shortLabel: "Go",
+		available: true,
+		status: "available",
+		...overrides,
+	};
+}
 
 // ───────── parseEnvInt ─────────
 
@@ -324,6 +366,131 @@ describe("parseHeaderBool", () => {
 	});
 });
 
+// ───────── headerValue / hasHeaderPrefix ─────────
+
+describe("headerValue", () => {
+	it("looks up header names case-insensitively", () => {
+		assert.equal(headerValue({ "X-Test": "1" }, "x-test"), "1");
+		assert.equal(headerValue({ "x-test": "1" }, "X-TEST"), "1");
+	});
+
+	it("returns undefined when missing", () => {
+		assert.equal(headerValue({ "x-other": "1" }, "x-test"), undefined);
+	});
+});
+
+describe("hasHeaderPrefix", () => {
+	it("matches header prefixes case-insensitively", () => {
+		assert.equal(hasHeaderPrefix({ "X-Codex-Plan": "plus" }, "x-codex-"), true);
+	});
+
+	it("returns false without a match", () => {
+		assert.equal(hasHeaderPrefix({ server: "test" }, "x-codex-"), false);
+	});
+});
+
+// ───────── parseOptionalNumber ─────────
+
+describe("parseOptionalNumber", () => {
+	it("returns the first finite number among named headers", () => {
+		assert.equal(parseOptionalNumber({ "x-b": "7" }, "x-a", "x-b"), 7);
+	});
+
+	it("skips empty and non-numeric values", () => {
+		assert.equal(parseOptionalNumber({ "x-a": "", "x-b": "abc", "x-c": "3" }, "x-a", "x-b", "x-c"), 3);
+	});
+
+	it("returns undefined when nothing parses", () => {
+		assert.equal(parseOptionalNumber({ "x-a": "abc" }, "x-a"), undefined);
+	});
+});
+
+// ───────── parseRetryAfterSeconds ─────────
+
+describe("parseRetryAfterSeconds", () => {
+	it("parses delay seconds", () => {
+		assert.equal(parseRetryAfterSeconds("30"), 30);
+	});
+
+	it("parses HTTP dates into seconds from now", () => {
+		const result = parseRetryAfterSeconds(new Date(Date.now() + 60_000).toUTCString());
+		assert.ok(result >= 58 && result <= 62);
+	});
+
+	it("returns 0 for missing or invalid values", () => {
+		assert.equal(parseRetryAfterSeconds(undefined), 0);
+		assert.equal(parseRetryAfterSeconds("soon"), 0);
+	});
+
+	it("clamps negative delays to 0", () => {
+		assert.equal(parseRetryAfterSeconds("-5"), 0);
+	});
+});
+
+// ───────── parseResetAtSeconds ─────────
+
+describe("parseResetAtSeconds", () => {
+	it("parses unix seconds", () => {
+		assert.equal(parseResetAtSeconds("2000000000"), 2000000000);
+	});
+
+	it("parses unix milliseconds", () => {
+		assert.equal(parseResetAtSeconds("2000000000000"), 2000000000);
+	});
+
+	it("parses date strings", () => {
+		assert.equal(parseResetAtSeconds("2030-01-01T00:00:00.000Z"), 1893456000);
+	});
+
+	it("returns zero for missing or invalid values", () => {
+		assert.equal(parseResetAtSeconds(undefined), 0);
+		assert.equal(parseResetAtSeconds("not-a-date"), 0);
+	});
+});
+
+// ───────── resetAfterFromAt ─────────
+
+describe("resetAfterFromAt", () => {
+	it("returns seconds until a future timestamp", () => {
+		const result = resetAfterFromAt(Math.round(Date.now() / 1000) + 120);
+		assert.ok(result! >= 118 && result! <= 122);
+	});
+
+	it("clamps past timestamps to 0", () => {
+		assert.equal(resetAfterFromAt(Math.round(Date.now() / 1000) - 60), 0);
+	});
+
+	it("returns undefined when unknown", () => {
+		assert.equal(resetAfterFromAt(undefined), undefined);
+		assert.equal(resetAfterFromAt(0), undefined);
+	});
+});
+
+// ───────── retryResetFields ─────────
+
+describe("retryResetFields", () => {
+	it("clears retry fields when not limited", () => {
+		assert.deepEqual(retryResetFields(false, 30, { retryAfterSeconds: 10, retryResetAt: 123 }), {
+			retryAfterSeconds: undefined,
+			retryResetAt: undefined,
+		});
+	});
+
+	it("computes retryResetAt from a fresh Retry-After", () => {
+		const before = Math.round(Date.now() / 1000);
+		const result = retryResetFields(true, 30);
+		assert.equal(result.retryAfterSeconds, 30);
+		assert.ok(result.retryResetAt! >= before + 30);
+	});
+
+	it("preserves previous values without a fresh Retry-After", () => {
+		assert.deepEqual(retryResetFields(true, 0, { retryAfterSeconds: 15, retryResetAt: 456 }), {
+			retryAfterSeconds: 15,
+			retryResetAt: 456,
+		});
+	});
+});
+
 // ───────── clampPercent ─────────
 
 describe("clampPercent", () => {
@@ -416,103 +583,73 @@ describe("footerUsageColor", () => {
 	});
 });
 
-// ───────── footerResetDuration ─────────
+// ───────── resetDuration ─────────
 
-describe("footerResetDuration", () => {
+describe("resetDuration", () => {
 	it("returns formatted reset time from resetAt", () => {
 		// Use a timestamp far enough ahead that sub-second drift won't matter
 		const future = Math.floor(Date.now() / 1000) + 9000;
-		const result = footerResetDuration(future, undefined);
-		assert.equal(result, "2.5h");
+		assert.equal(resetDuration(future, undefined), "2.5h");
 	});
 
 	it("returns formatted duration from resetAfterSeconds", () => {
-		assert.equal(footerResetDuration(undefined, 60), "1m");
-		assert.equal(footerResetDuration(undefined, 3600), "1h");
+		assert.equal(resetDuration(undefined, 60), "1m");
+		assert.equal(resetDuration(undefined, 3600), "1h");
 	});
 
 	it("returns undefined with no args", () => {
-		assert.equal(footerResetDuration(undefined, undefined), undefined);
+		assert.equal(resetDuration(undefined, undefined), undefined);
 	});
 
 	it("prefers resetAt over resetAfterSeconds", () => {
 		const future = Math.floor(Date.now() / 1000) + 12600;
-		const result = footerResetDuration(future, 60);
-		assert.equal(result, "3.5h");
+		assert.equal(resetDuration(future, 60), "3.5h");
 	});
 
 	it("returns undefined for resetAt=0", () => {
-		assert.equal(footerResetDuration(0, undefined), undefined);
+		assert.equal(resetDuration(0, undefined), undefined);
 	});
 });
 
-// ───────── resolveModelEndpoint ─────────
+// ───────── resolveProbeEndpoint ─────────
 
-describe("resolveModelEndpoint", () => {
-	it("appends /v1/messages for anthropic-messages without suffix", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com", "anthropic-messages"),
-			"https://api.example.com/v1/messages",
-		);
-	});
-
-	it("keeps existing /messages for anthropic-messages", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com/messages", "anthropic-messages"),
-			"https://api.example.com/messages",
-		);
-	});
-
-	it("appends /v1/chat/completions for openai-completions without suffix", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com", "openai-completions"),
-			"https://api.example.com/v1/chat/completions",
-		);
-	});
-
-	it("keeps existing /chat/completions for openai-completions", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com/chat/completions", "openai-completions"),
-			"https://api.example.com/chat/completions",
-		);
-	});
-
-	it("appends /chat/completions when already /v1", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com/v1", "openai-completions"),
-			"https://api.example.com/v1/chat/completions",
-		);
-	});
-
-	it("normalizes trailing slash", () => {
-		assert.equal(
-			resolveModelEndpoint("https://api.example.com/v1/", "openai-completions"),
-			"https://api.example.com/v1/chat/completions",
-		);
-	});
-});
-
-// ───────── resolveSubscriptionEndpoint ─────────
-
-describe("resolveSubscriptionEndpoint", () => {
+describe("resolveProbeEndpoint", () => {
 	it("appends Anthropic /v1/messages", () => {
 		assert.equal(
-			resolveSubscriptionEndpoint("https://api.example.com/root", "anthropic-messages"),
+			resolveProbeEndpoint("https://api.example.com/root", "anthropic-messages"),
 			"https://api.example.com/root/v1/messages",
 		);
 	});
 
 	it("appends OpenAI chat completions without injecting v1 into nested base paths", () => {
 		assert.equal(
-			resolveSubscriptionEndpoint("https://api.z.ai/api/coding/paas/v4", "openai-completions"),
+			resolveProbeEndpoint("https://api.z.ai/api/coding/paas/v4", "openai-completions"),
 			"https://api.z.ai/api/coding/paas/v4/chat/completions",
 		);
 	});
 
 	it("appends OpenAI responses endpoint", () => {
 		assert.equal(
-			resolveSubscriptionEndpoint("https://opencode.ai/zen/v1", "openai-responses"),
+			resolveProbeEndpoint("https://opencode.ai/zen/v1", "openai-responses"),
 			"https://opencode.ai/zen/v1/responses",
+		);
+	});
+
+	it("keeps an endpoint that already has the API suffix", () => {
+		assert.equal(
+			resolveProbeEndpoint("https://api.example.com/messages", "anthropic-messages"),
+			"https://api.example.com/messages",
+		);
+		assert.equal(
+			resolveProbeEndpoint("https://api.example.com/chat/completions", "openai-completions"),
+			"https://api.example.com/chat/completions",
+		);
+	});
+
+	it("normalizes trailing slashes", () => {
+		assert.equal(
+			resolveProbeEndpoint("https://opencode.ai/zen/v1/", "openai-completions"),
+			"https://opencode.ai/zen/v1/chat/completions",
 		);
 	});
 });
@@ -534,63 +671,6 @@ describe("resolveConfigValue", () => {
 		process.env.TEST_RESOLVE = "";
 		assert.equal(resolveConfigValue("TEST_RESOLVE"), "");
 		delete process.env.TEST_RESOLVE;
-	});
-});
-
-// ───────── isPerModelUnavailable ─────────
-
-describe("isPerModelUnavailable", () => {
-	it("returns false for ambiguous status-only errors", () => {
-		assert.equal(isPerModelUnavailable(400, "bad request"), false);
-		assert.equal(isPerModelUnavailable(404, "not found"), false);
-		assert.equal(isPerModelUnavailable(422, "unprocessable"), false);
-	});
-
-	it("returns true for model disabled", () => {
-		assert.equal(isPerModelUnavailable(500, "model disabled for this API key"), true);
-	});
-
-	it("returns true for model not found", () => {
-		assert.equal(isPerModelUnavailable(500, "model was not found"), true);
-	});
-
-	it("returns true for model unsupported", () => {
-		assert.equal(isPerModelUnavailable(500, "Model unsupported"), true);
-	});
-
-	it("returns false for other errors", () => {
-		assert.equal(isPerModelUnavailable(500, "internal server error"), false);
-		assert.equal(isPerModelUnavailable(503, "service unavailable"), false);
-	});
-});
-
-// ───────── isGlobalGoLimit ─────────
-
-describe("isGlobalGoLimit", () => {
-	it("returns false for provider errors", () => {
-		assert.equal(isGlobalGoLimit("error from provider: timeout"), false);
-	});
-
-	it("returns true for insufficient credits", () => {
-		assert.equal(isGlobalGoLimit("insufficient credits"), true);
-		assert.equal(isGlobalGoLimit("Insufficient balance"), true);
-	});
-
-	it("returns true for credits exhausted", () => {
-		assert.equal(isGlobalGoLimit("credits exhausted"), true);
-	});
-
-	it("returns true for quota limit messages", () => {
-		assert.equal(isGlobalGoLimit("OpenCode quota exceeded"), true);
-		assert.equal(isGlobalGoLimit("go limit reached"), true);
-	});
-
-	it("returns true for subscription quota", () => {
-		assert.equal(isGlobalGoLimit("subscription quota exceeded"), true);
-	});
-
-	it("returns false for unrelated messages", () => {
-		assert.equal(isGlobalGoLimit("rate limit per model"), false);
 	});
 });
 
@@ -730,21 +810,6 @@ describe("checkAnthropicUsageFromUsageApi", () => {
 	});
 });
 
-describe("parseAnthropicResetAt", () => {
-	it("parses RFC3339 reset timestamps", () => {
-		const result = parseAnthropicResetAt("2030-01-01T00:00:00.000Z");
-		assert.equal(result, 1893456000);
-	});
-
-	it("parses unix seconds", () => {
-		assert.equal(parseAnthropicResetAt("2000000000"), 2000000000);
-	});
-
-	it("returns zero for invalid values", () => {
-		assert.equal(parseAnthropicResetAt("not-a-date"), 0);
-	});
-});
-
 describe("isAnthropicModelUnavailable", () => {
 	it("matches unavailable model messages", () => {
 		assert.equal(isAnthropicModelUnavailable("model claude-x not found"), true);
@@ -816,20 +881,6 @@ describe("parseCopilotUsageHeaders", () => {
 	});
 });
 
-describe("parseCopilotResetAt", () => {
-	it("parses unix seconds", () => {
-		assert.equal(parseCopilotResetAt("2000000000"), 2000000000);
-	});
-
-	it("parses unix milliseconds", () => {
-		assert.equal(parseCopilotResetAt("2000000000000"), 2000000000);
-	});
-
-	it("parses date strings", () => {
-		assert.equal(parseCopilotResetAt("2030-01-01T00:00:00.000Z"), 1893456000);
-	});
-});
-
 describe("Copilot helpers", () => {
 	it("normalizes enterprise domains", () => {
 		assert.equal(normalizeCopilotDomain("https://company.ghe.com/path"), "company.ghe.com");
@@ -852,7 +903,7 @@ describe("Copilot helpers", () => {
 });
 
 describe("parseSubscriptionUsageHeaders", () => {
-	const zenConfig = {
+	const zenConfig: SubscriptionProviderConfig = {
 		provider: "opencode",
 		label: "OpenCode Zen",
 		shortLabel: "Zen",
@@ -892,15 +943,15 @@ describe("parseSubscriptionUsageHeaders", () => {
 });
 
 describe("getSubscriptionCheckModels", () => {
-	const config = {
+	const config: SubscriptionProviderConfig = {
 		provider: "opencode",
 		label: "OpenCode Zen",
 		shortLabel: "Zen",
-		supportedApis: ["openai-completions", "anthropic-messages"] as any,
+		supportedApis: ["openai-completions", "anthropic-messages"],
 		preferredModelIds: ["big-pickle"],
 		documentedModels: [
-			{ id: "big-pickle", api: "openai-completions" as any, endpoint: "https://opencode.ai/zen/v1/chat/completions", costRank: 0 },
-			{ id: "claude-haiku-4-5", api: "anthropic-messages" as any, endpoint: "https://opencode.ai/zen/v1/messages", costRank: 3 },
+			{ id: "big-pickle", api: "openai-completions", endpoint: "https://opencode.ai/zen/v1/chat/completions", costRank: 0 },
+			{ id: "claude-haiku-4-5", api: "anthropic-messages", endpoint: "https://opencode.ai/zen/v1/messages", costRank: 3 },
 		],
 	};
 
@@ -955,10 +1006,10 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.workingModel, "glm-5.1");
-		assert.equal(usage.rollingUsedPercent, 25);
-		assert.equal(usage.rollingRemainingPercent, 75);
-		assert.equal(usage.weeklyUsedPercent, 50);
-		assert.equal(usage.monthlyResetAfterSeconds, 3600);
+		assert.equal(usage.rolling?.usedPercent, 25);
+		assert.equal(usage.rolling?.remainingPercent, 75);
+		assert.equal(usage.weekly?.usedPercent, 50);
+		assert.equal(usage.monthly?.resetAfterSeconds, 3600);
 		assert.equal(usage.quotaSource, "response headers");
 	});
 
@@ -971,17 +1022,30 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 	});
 
 	it("preserves previous Go quota when only model availability is known", () => {
-		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", {
+		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", makeGoUsage({
 			available: false,
 			status: "rate_limited",
-			rollingUsedPercent: 20,
-			rollingRemainingPercent: 80,
-		});
+			rolling: { usedPercent: 20, remainingPercent: 80 },
+		}));
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.workingModel, "glm-5.1");
-		assert.equal(usage.rollingUsedPercent, 20);
+		assert.equal(usage.rolling?.usedPercent, 20);
 		assert.equal(usage.errorMessage, undefined);
+	});
+
+	it("preserves a dashboard quota error on plain availability headers", () => {
+		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }));
+		assert.ok(usage);
+		assert.equal(usage.quotaError, "boom");
+	});
+
+	it("clears a stale quota error when fresh quota headers arrive", () => {
+		const usage = parseOpenCodeGoUsageHeaders({
+			"x-opencode-go-rolling-used-percent": "25",
+		}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }));
+		assert.ok(usage);
+		assert.equal(usage.quotaError, undefined);
 	});
 });
 
@@ -1067,18 +1131,6 @@ describe("formatResetTime", () => {
 	});
 });
 
-// ───────── Integration: progressBar + clampPercent ─────────
-
-describe("progressBar integration", () => {
-	it("produces correct fill for edge percents", () => {
-		const bar = (p: number) => progressBar(p, 10);
-		assert.equal(bar(0), "░".repeat(10));
-		assert.equal(bar(10), "█".repeat(1) + "░".repeat(9));
-		assert.equal(bar(50), "█".repeat(5) + "░".repeat(5));
-		assert.equal(bar(100), "█".repeat(10));
-	});
-});
-
 // ───────── statusIcon ─────────
 
 describe("statusIcon", () => {
@@ -1107,7 +1159,7 @@ describe("statusIcon", () => {
 
 describe("codexUsageHasData", () => {
 	it("returns true for normal usage", () => {
-		assert.equal(codexUsageHasData({ activeLimit: "normal", error: undefined } as any), true);
+		assert.equal(codexUsageHasData(makeCodexUsage()), true);
 	});
 
 	it("returns false for undefined", () => {
@@ -1115,81 +1167,30 @@ describe("codexUsageHasData", () => {
 	});
 
 	it("returns false when error is set", () => {
-		assert.equal(codexUsageHasData({ activeLimit: "normal", error: "some error" } as any), false);
+		assert.equal(codexUsageHasData(makeCodexUsage({ error: "some error" })), false);
 	});
 
 	it("returns false when activeLimit is error", () => {
-		assert.equal(codexUsageHasData({ activeLimit: "error", error: undefined } as any), false);
+		assert.equal(codexUsageHasData(makeCodexUsage({ activeLimit: "error" })), false);
 	});
 });
 
-// ───────── anthropicUsageHasData ─────────
+// ───────── usageHasData ─────────
 
-describe("anthropicUsageHasData", () => {
-	it("returns true for available status", () => {
-		assert.equal(anthropicUsageHasData({ status: "available" } as any), true);
-	});
-
-	it("returns true for rate_limited", () => {
-		assert.equal(anthropicUsageHasData({ status: "rate_limited" } as any), true);
+describe("usageHasData", () => {
+	it("returns true for available and limited statuses", () => {
+		assert.equal(usageHasData({ status: "available" }), true);
+		assert.equal(usageHasData({ status: "rate_limited" }), true);
+		assert.equal(usageHasData({ status: "credits_error" }), true);
+		assert.equal(usageHasData({ status: "error" }), true);
 	});
 
 	it("returns false for undefined", () => {
-		assert.equal(anthropicUsageHasData(undefined), false);
+		assert.equal(usageHasData(undefined), false);
 	});
 
 	it("returns false for no_key", () => {
-		assert.equal(anthropicUsageHasData({ status: "no_key" } as any), false);
-	});
-});
-
-// ───────── copilotUsageHasData ─────────
-
-describe("copilotUsageHasData", () => {
-	it("returns true for available status", () => {
-		assert.equal(copilotUsageHasData({ status: "available" } as any), true);
-	});
-
-	it("returns true for rate_limited", () => {
-		assert.equal(copilotUsageHasData({ status: "rate_limited" } as any), true);
-	});
-
-	it("returns false for undefined", () => {
-		assert.equal(copilotUsageHasData(undefined), false);
-	});
-
-	it("returns false for no_key", () => {
-		assert.equal(copilotUsageHasData({ status: "no_key" } as any), false);
-	});
-});
-
-// ───────── goUsageHasData ─────────
-
-describe("goUsageHasData", () => {
-	it("returns true for available status", () => {
-		assert.equal(goUsageHasData({ status: "available" } as any), true);
-	});
-
-	it("returns true for rate_limited", () => {
-		assert.equal(goUsageHasData({ status: "rate_limited" } as any), true);
-	});
-
-	it("returns false for undefined", () => {
-		assert.equal(goUsageHasData(undefined), false);
-	});
-
-	it("returns false for no_key", () => {
-		assert.equal(goUsageHasData({ status: "no_key" } as any), false);
-	});
-});
-
-describe("subscriptionUsageHasData", () => {
-	it("returns true for configured generic providers", () => {
-		assert.equal(subscriptionUsageHasData({ provider: "opencode", label: "OpenCode Zen", shortLabel: "Zen", available: true, status: "available" }), true);
-	});
-
-	it("returns false for no_key", () => {
-		assert.equal(subscriptionUsageHasData({ provider: "opencode", label: "OpenCode Zen", shortLabel: "Zen", available: false, status: "no_key" }), false);
+		assert.equal(usageHasData({ status: "no_key" }), false);
 	});
 });
 
@@ -1290,33 +1291,20 @@ describe("cancelResponseBody", () => {
 // ───────── renderCodexWindows ─────────
 
 describe("renderCodexWindows", () => {
-	const identity = (_color: string, text: string) => text;
-
 	it("renders code review and credits when present", () => {
-		const future = Math.floor(Date.now() / 1000) + 3600;
 		const result = renderCodexWindows(
-			{
+			makeCodexUsage({
 				planType: "plus",
-				activeLimit: "normal",
 				primaryUsedPercent: 42,
 				secondaryUsedPercent: 60,
 				codeReviewUsedPercent: 10,
-				primaryWindowMinutes: 300,
-				secondaryWindowMinutes: 10080,
 				codeReviewWindowMinutes: 1440,
-				primaryResetAfterSeconds: 0,
-				secondaryResetAfterSeconds: 0,
-				primaryResetAt: 0,
-				secondaryResetAt: 0,
-				codeReviewResetAt: undefined,
 				codeReviewResetAfterSeconds: 86400,
 				primaryOverSecondaryLimitPercent: 10,
 				creditsHasCredits: true,
 				creditsBalance: "$5.00",
-				creditsUnlimited: false,
-				source: "usage_api",
-			},
-			identity as any,
+			}),
+			identity,
 			false,
 		);
 		const joined = result.join("\n");
@@ -1332,24 +1320,8 @@ describe("renderCodexWindows", () => {
 
 	it("shows plan type when non-unknown", () => {
 		const result = renderCodexWindows(
-			{
-				planType: "enterprise",
-				activeLimit: "normal",
-				primaryUsedPercent: 10,
-				secondaryUsedPercent: 20,
-				primaryWindowMinutes: 300,
-				secondaryWindowMinutes: 10080,
-				primaryResetAfterSeconds: 0,
-				secondaryResetAfterSeconds: 0,
-				primaryResetAt: 0,
-				secondaryResetAt: 0,
-				primaryOverSecondaryLimitPercent: 0,
-				creditsHasCredits: false,
-				creditsBalance: "",
-				creditsUnlimited: false,
-				source: "usage_api",
-			},
-			identity as any,
+			makeCodexUsage({ planType: "enterprise", primaryUsedPercent: 10, secondaryUsedPercent: 20 }),
+			identity,
 			false,
 		);
 		assert.match(result.join("\n"), /enterprise/);
@@ -1357,25 +1329,8 @@ describe("renderCodexWindows", () => {
 
 	it("renders error state", () => {
 		const result = renderCodexWindows(
-			{
-				planType: "unknown",
-				activeLimit: "error",
-				primaryUsedPercent: 0,
-				secondaryUsedPercent: 0,
-				primaryWindowMinutes: 300,
-				secondaryWindowMinutes: 10080,
-				primaryResetAfterSeconds: 0,
-				secondaryResetAfterSeconds: 0,
-				primaryResetAt: 0,
-				secondaryResetAt: 0,
-				primaryOverSecondaryLimitPercent: 0,
-				creditsHasCredits: false,
-				creditsBalance: "",
-				creditsUnlimited: false,
-				source: "probe",
-				error: "API connection failed",
-			},
-			identity as any,
+			makeCodexUsage({ activeLimit: "error", source: "probe", error: "API connection failed" }),
+			identity,
 			false,
 		);
 		assert.match(result.join("\n"), /✗ Codex/);
@@ -1384,25 +1339,15 @@ describe("renderCodexWindows", () => {
 
 	it("shows rate_limited label", () => {
 		const result = renderCodexWindows(
-			{
-				planType: "unknown",
+			makeCodexUsage({
 				activeLimit: "rate_limited",
 				primaryUsedPercent: 100,
 				secondaryUsedPercent: 50,
-				primaryWindowMinutes: 300,
-				secondaryWindowMinutes: 10080,
-				primaryResetAfterSeconds: 0,
-				secondaryResetAfterSeconds: 0,
 				primaryResetAt: Math.floor(Date.now() / 1000) + 300,
-				secondaryResetAt: 0,
-				primaryOverSecondaryLimitPercent: 0,
-				creditsHasCredits: false,
-				creditsBalance: "",
-				creditsUnlimited: false,
 				source: "probe",
 				error: "Rate limited (429)",
-			},
-			identity as any,
+			}),
+			identity,
 			false,
 		);
 		assert.match(result.join("\n"), /rate_limited/);
@@ -1412,8 +1357,6 @@ describe("renderCodexWindows", () => {
 // ───────── renderAnthropicWindows ─────────
 
 describe("renderAnthropicWindows", () => {
-	const identity = (_color: string, text: string) => text;
-
 	it("renders 5hr/week utilization windows", () => {
 		const anthropic: AnthropicUsage = {
 			available: true,
@@ -1423,7 +1366,7 @@ describe("renderAnthropicWindows", () => {
 			fiveHour: { utilizationPercent: 36, resetAfterSeconds: 7200 },
 			weekly: { utilizationPercent: 3, resetAfterSeconds: 520000 },
 		};
-		const result = renderAnthropicWindows(anthropic, identity as any, false);
+		const result = renderAnthropicWindows(anthropic, identity, false);
 		const joined = result.join("\n");
 		assert.match(joined, /Anthropic/);
 		assert.match(joined, /Claude Pro\/Max/);
@@ -1443,7 +1386,7 @@ describe("renderAnthropicWindows", () => {
 			retryAfterSeconds: 30,
 			errorMessage: "Rate limited",
 		};
-		const result = renderAnthropicWindows(anthropic, identity as any, false).join("\n");
+		const result = renderAnthropicWindows(anthropic, identity, false).join("\n");
 		assert.match(result, /rate limited/);
 		assert.match(result, /retry: 30s/);
 		assert.match(result, /claude-sonnet-4-5/);
@@ -1455,8 +1398,8 @@ describe("renderAnthropicWindows", () => {
 			status: "available",
 			fiveHour: { utilizationPercent: 50 },
 		};
-		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
-		const result = renderAnthropicWindows(anthropic, colorFmt as any, true).join("\n");
+		const colorFmt = (color: string, text: string) => `[${color}:${text}]`;
+		const result = renderAnthropicWindows(anthropic, colorFmt, true).join("\n");
 		assert.match(result, /\[success/);
 	});
 });
@@ -1464,8 +1407,6 @@ describe("renderAnthropicWindows", () => {
 // ───────── renderCopilotWindows ─────────
 
 describe("renderCopilotWindows", () => {
-	const identity = (_color: string, text: string) => text;
-
 	it("renders Copilot quota windows", () => {
 		const copilot: CopilotUsage = {
 			available: true,
@@ -1475,7 +1416,7 @@ describe("renderCopilotWindows", () => {
 			requests: { usedPercent: 10, remainingPercent: 90, resetAfterSeconds: 60 },
 			availableModels: 12,
 		};
-		const result = renderCopilotWindows(copilot, identity as any, false).join("\n");
+		const result = renderCopilotWindows(copilot, identity, false).join("\n");
 		assert.match(result, /GitHub Copilot/);
 		assert.match(result, /premium/);
 		assert.match(result, /requests/);
@@ -1492,7 +1433,7 @@ describe("renderCopilotWindows", () => {
 			retryAfterSeconds: 45,
 			errorMessage: "Rate limited",
 		};
-		const result = renderCopilotWindows(copilot, identity as any, false).join("\n");
+		const result = renderCopilotWindows(copilot, identity, false).join("\n");
 		assert.match(result, /rate limited/);
 		assert.match(result, /retry: 45s/);
 		assert.match(result, /gpt-5-mini/);
@@ -1504,8 +1445,8 @@ describe("renderCopilotWindows", () => {
 			status: "available",
 			requests: { usedPercent: 50, remainingPercent: 50 },
 		};
-		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
-		const result = renderCopilotWindows(copilot, colorFmt as any, true).join("\n");
+		const colorFmt = (color: string, text: string) => `[${color}:${text}]`;
+		const result = renderCopilotWindows(copilot, colorFmt, true).join("\n");
 		assert.match(result, /\[success/);
 	});
 });
@@ -1513,28 +1454,14 @@ describe("renderCopilotWindows", () => {
 // ───────── renderGoWindows ─────────
 
 describe("renderGoWindows", () => {
-	const identity = (_color: string, text: string) => text;
-
 	it("renders quota data windows", () => {
-		const go: OpenCodeGoUsage = {
-			available: true,
-			status: "available",
-			rollingUsedPercent: 20,
-			rollingRemainingPercent: 80,
-			rollingResetAfterSeconds: 11520,
-			rollingResetAt: 0,
-			weeklyUsedPercent: 40,
-			weeklyRemainingPercent: 60,
-			weeklyResetAfterSeconds: 0,
-			weeklyResetAt: Math.floor(Date.now() / 1000) + 604800,
-			monthlyUsedPercent: 60,
-			monthlyRemainingPercent: 40,
-			monthlyResetAfterSeconds: 0,
-			monthlyResetAt: Math.floor(Date.now() / 1000) + 2592000,
-			quotaConfigured: true,
+		const go = makeGoUsage({
+			rolling: { usedPercent: 20, remainingPercent: 80, resetAfterSeconds: 11520 },
+			weekly: { usedPercent: 40, remainingPercent: 60, resetAt: Math.floor(Date.now() / 1000) + 604800 },
+			monthly: { usedPercent: 60, remainingPercent: 40, resetAt: Math.floor(Date.now() / 1000) + 2592000 },
 			quotaSource: "/path/to/config",
-		};
-		const result = renderGoWindows(go, identity as any, false);
+		});
+		const result = renderGoWindows(go, identity, false);
 		const joined = result.join("\n");
 		assert.match(joined, /OpenCode Go/);
 		assert.match(joined, /20%/);
@@ -1546,24 +1473,20 @@ describe("renderGoWindows", () => {
 	});
 
 	it("renders no_key status", () => {
-		const go: OpenCodeGoUsage = {
-			available: false,
-			status: "no_key",
-		};
-		const result = renderGoWindows(go, identity as any, false);
+		const result = renderGoWindows(makeGoUsage({ available: false, status: "no_key" }), identity, false);
 		assert.match(result.join("\n"), /no key/);
 	});
 
 	it("renders rate_limited with error message", () => {
-		const go: OpenCodeGoUsage = {
+		const go = makeGoUsage({
 			available: false,
 			status: "rate_limited",
 			rateLimitedModel: "qwen3.5-plus",
 			errorMessage: "Rate limit exceeded",
 			checkedModels: 3,
 			totalModels: 10,
-		};
-		const result = renderGoWindows(go, identity as any, false);
+		});
+		const result = renderGoWindows(go, identity, false);
 		const joined = result.join("\n");
 		assert.match(joined, /rate limited/);
 		assert.match(joined, /qwen3\.5-plus/);
@@ -1572,38 +1495,24 @@ describe("renderGoWindows", () => {
 	});
 
 	it("renders quotaError line", () => {
-		const go: OpenCodeGoUsage = {
-			available: true,
-			status: "available",
-			quotaError: "Dashboard parse error",
-			workingModel: "glm-5.1",
-		};
-		const result = renderGoWindows(go, identity as any, false);
+		const go = makeGoUsage({ quotaError: "Dashboard parse error", workingModel: "glm-5.1" });
+		const result = renderGoWindows(go, identity, false);
 		const joined = result.join("\n");
 		assert.match(joined, /Dashboard parse error/);
 		assert.match(joined, /glm-5\.1/);
 	});
 
 	it("renders with color when useColor=true", () => {
-		const go: OpenCodeGoUsage = {
-			available: true,
-			status: "available",
-			rollingUsedPercent: 50,
-			rollingRemainingPercent: 50,
-			rollingResetAfterSeconds: 3600,
-		};
-		const colorFmt = (_c: string, text: string) => `[${_c}:${text}]`;
-		const result = renderGoWindows(go, colorFmt as any, true);
-		const joined = result.join("\n");
-		assert.match(joined, /\[success/);
+		const go = makeGoUsage({ rolling: { usedPercent: 50, remainingPercent: 50, resetAfterSeconds: 3600 } });
+		const colorFmt = (color: string, text: string) => `[${color}:${text}]`;
+		const result = renderGoWindows(go, colorFmt, true);
+		assert.match(result.join("\n"), /\[success/);
 	});
 });
 
 // ───────── renderSubscriptionWindows ─────────
 
 describe("renderSubscriptionWindows", () => {
-	const identity = (_color: string, text: string) => text;
-
 	it("renders generic subscription quota windows", () => {
 		const subscription: SubscriptionUsage = {
 			provider: "opencode",
@@ -1616,7 +1525,7 @@ describe("renderSubscriptionWindows", () => {
 			checkedModels: 1,
 			totalModels: 4,
 		};
-		const result = renderSubscriptionWindows(subscription, identity as any, false).join("\n");
+		const result = renderSubscriptionWindows(subscription, identity, false).join("\n");
 		assert.match(result, /OpenCode Zen/);
 		assert.match(result, /rolling/);
 		assert.match(result, /35%/);
@@ -1634,7 +1543,7 @@ describe("renderSubscriptionWindows", () => {
 			rateLimitedModel: "big-pickle",
 			retryAfterSeconds: 30,
 		};
-		const result = renderSubscriptionWindows(subscription, identity as any, false).join("\n");
+		const result = renderSubscriptionWindows(subscription, identity, false).join("\n");
 		assert.match(result, /rate limited/);
 		assert.match(result, /retry: 30s/);
 		assert.match(result, /big-pickle/);
@@ -1649,45 +1558,28 @@ describe("buildUsageWidget", () => {
 		bold: (text: string) => text,
 	} as any;
 
+	/** Read the private text content of a rendered Text widget. */
+	const widgetText = (widget: unknown): string => (widget as { text: string }).text;
+
 	it("renders loading state", () => {
-		const result = buildUsageWidget(undefined, undefined, mockTheme, true);
-		assert.match(result.text, /Checking usage limits/);
+		const result = buildUsageWidget({ subscriptions: [] }, mockTheme, true);
+		assert.match(widgetText(result), /Checking usage limits/);
 	});
 
 	it("renders with both services configured", () => {
-		const codex: any = {
-			planType: "plus",
-			activeLimit: "normal",
-			primaryUsedPercent: 30,
-			secondaryUsedPercent: 40,
-			primaryWindowMinutes: 300,
-			secondaryWindowMinutes: 10080,
-			primaryResetAfterSeconds: 0,
-			secondaryResetAfterSeconds: 0,
-			primaryResetAt: 0,
-			secondaryResetAt: 0,
-			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: false,
-			creditsBalance: "",
-			creditsUnlimited: false,
-			source: "usage_api",
-		};
-		const go: OpenCodeGoUsage = {
-			available: true,
-			status: "available",
-		};
-		const result = buildUsageWidget(codex, go, mockTheme, false);
-		assert.match(result.text, /Usage Limits/);
-		assert.match(result.text, /Codex/);
-		assert.match(result.text, /OpenCode Go/);
+		const codex = makeCodexUsage({ planType: "plus", primaryUsedPercent: 30, secondaryUsedPercent: 40 });
+		const result = widgetText(buildUsageWidget({ codex, go: makeGoUsage(), subscriptions: [] }, mockTheme, false));
+		assert.match(result, /Usage Limits/);
+		assert.match(result, /Codex/);
+		assert.match(result, /OpenCode Go/);
 	});
 
 	it("omits unconfigured services instead of showing 'not configured'", () => {
-		const result = buildUsageWidget(undefined, undefined, mockTheme, false);
-		assert.doesNotMatch(result.text, /not configured/);
-		assert.doesNotMatch(result.text, /Codex/);
-		assert.doesNotMatch(result.text, /OpenCode Go/);
-		assert.match(result.text, /Usage Limits/);
+		const result = widgetText(buildUsageWidget({ subscriptions: [] }, mockTheme, false));
+		assert.doesNotMatch(result, /not configured/);
+		assert.doesNotMatch(result, /Codex/);
+		assert.doesNotMatch(result, /OpenCode Go/);
+		assert.match(result, /Usage Limits/);
 	});
 
 	it("renders generic subscription providers", () => {
@@ -1699,33 +1591,17 @@ describe("buildUsageWidget", () => {
 			status: "available",
 			workingModel: "big-pickle",
 		};
-		const result = buildUsageWidget(undefined, undefined, mockTheme, false, undefined, undefined, [subscription]);
-		assert.match(result.text, /OpenCode Zen/);
-		assert.match(result.text, /big-pickle/);
+		const result = widgetText(buildUsageWidget({ subscriptions: [subscription] }, mockTheme, false));
+		assert.match(result, /OpenCode Zen/);
+		assert.match(result, /big-pickle/);
 	});
 
 	it("shows partial services", () => {
-		const codex: any = {
-			planType: "unknown",
-			activeLimit: "normal",
-			primaryUsedPercent: 50,
-			secondaryUsedPercent: 50,
-			primaryWindowMinutes: 300,
-			secondaryWindowMinutes: 10080,
-			primaryResetAfterSeconds: 0,
-			secondaryResetAfterSeconds: 0,
-			primaryResetAt: 0,
-			secondaryResetAt: 0,
-			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: false,
-			creditsBalance: "",
-			creditsUnlimited: false,
-			source: "usage_api",
-		};
-		const result = buildUsageWidget(codex, undefined, mockTheme, false);
-		assert.match(result.text, /Codex/);
-		assert.doesNotMatch(result.text, /not configured/);
-		assert.doesNotMatch(result.text, /OpenCode Go/);
+		const codex = makeCodexUsage({ primaryUsedPercent: 50, secondaryUsedPercent: 50 });
+		const result = widgetText(buildUsageWidget({ codex, subscriptions: [] }, mockTheme, false));
+		assert.match(result, /Codex/);
+		assert.doesNotMatch(result, /not configured/);
+		assert.doesNotMatch(result, /OpenCode Go/);
 	});
 });
 
@@ -1733,45 +1609,25 @@ describe("buildUsageWidget", () => {
 
 describe("buildStartupUsageMessage", () => {
 	it("includes help when requested", () => {
-		const result = buildStartupUsageMessage(undefined, undefined, true);
+		const result = buildStartupUsageMessage({ subscriptions: [] }, true);
 		assert.match(result, /showWidget/);
 	});
 
 	it("omits help when not requested", () => {
-		const result = buildStartupUsageMessage(undefined, undefined, false);
+		const result = buildStartupUsageMessage({ subscriptions: [] }, false);
 		assert.doesNotMatch(result, /showWidget/);
 	});
 
 	it("renders both services", () => {
-		const codex: any = {
-			planType: "plus",
-			activeLimit: "normal",
-			primaryUsedPercent: 30,
-			secondaryUsedPercent: 40,
-			primaryWindowMinutes: 300,
-			secondaryWindowMinutes: 10080,
-			primaryResetAfterSeconds: 0,
-			secondaryResetAfterSeconds: 0,
-			primaryResetAt: 0,
-			secondaryResetAt: 0,
-			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: false,
-			creditsBalance: "",
-			creditsUnlimited: false,
-			source: "usage_api",
-		};
-		const go: OpenCodeGoUsage = {
-			available: true,
-			status: "available",
-		};
-		const result = buildStartupUsageMessage(codex, go, false);
+		const codex = makeCodexUsage({ planType: "plus", primaryUsedPercent: 30, secondaryUsedPercent: 40 });
+		const result = buildStartupUsageMessage({ codex, go: makeGoUsage(), subscriptions: [] }, false);
 		assert.match(result, /Usage Limits/);
 		assert.match(result, /Codex/);
 		assert.match(result, /OpenCode Go/);
 	});
 
 	it("omits unconfigured services instead of showing 'not configured'", () => {
-		const result = buildStartupUsageMessage(undefined, undefined, false);
+		const result = buildStartupUsageMessage({ subscriptions: [] }, false);
 		assert.doesNotMatch(result, /not configured/);
 		assert.doesNotMatch(result, /Codex/);
 		assert.doesNotMatch(result, /OpenCode Go/);
@@ -1786,7 +1642,7 @@ describe("buildStartupUsageMessage", () => {
 			status: "available",
 			workingModel: "big-pickle",
 		};
-		const result = buildStartupUsageMessage(undefined, undefined, false, undefined, undefined, [subscription]);
+		const result = buildStartupUsageMessage({ subscriptions: [subscription] }, false);
 		assert.match(result, /OpenCode Zen/);
 		assert.match(result, /big-pickle/);
 	});
@@ -1814,7 +1670,6 @@ describe("configPathCandidates", () => {
 
 	it("includes ~/.config path", () => {
 		const result = configPathCandidates("opencode-go.json");
-		const home = process.env.HOME || "/home/user";
 		assert.ok(result.some(p => p.includes("/.config/opencode/opencode-go.json")));
 	});
 
@@ -1939,7 +1794,7 @@ describe("widgetSettingFromConfig", () => {
 
 describe("parseOpenCodeGoUsageWindow", () => {
 	it("parses rolling usage from HTML", () => {
-		const html = "<script>rollingUsage:\$R[42]={usagePercent:35.5,resetInSec:7200}</script>";
+		const html = "<script>rollingUsage:$R[42]={usagePercent:35.5,resetInSec:7200}</script>";
 		const result = parseOpenCodeGoUsageWindow(html, "rolling");
 		assert.ok(result !== undefined);
 		assert.equal(result!.usedPercent, 35.5);
@@ -1947,14 +1802,14 @@ describe("parseOpenCodeGoUsageWindow", () => {
 	});
 
 	it("parses weekly usage", () => {
-		const html = "<script>weeklyUsage:\$R[0]={usagePercent:80,resetInSec:604800}</script>";
+		const html = "<script>weeklyUsage:$R[0]={usagePercent:80,resetInSec:604800}</script>";
 		const result = parseOpenCodeGoUsageWindow(html, "weekly");
 		assert.ok(result !== undefined);
 		assert.equal(result!.usedPercent, 80);
 	});
 
 	it("parses monthly usage", () => {
-		const html = "<script>monthlyUsage:\$R[1]={usagePercent:50,resetInSec:2592000}</script>";
+		const html = "<script>monthlyUsage:$R[1]={usagePercent:50,resetInSec:2592000}</script>";
 		const result = parseOpenCodeGoUsageWindow(html, "monthly");
 		assert.ok(result !== undefined);
 		assert.equal(result!.usedPercent, 50);
@@ -1966,19 +1821,19 @@ describe("parseOpenCodeGoUsageWindow", () => {
 	});
 
 	it("returns undefined for missing usagePercent", () => {
-		const html = "<script>rollingUsage:\$R[0]={resetInSec:3600}</script>";
+		const html = "<script>rollingUsage:$R[0]={resetInSec:3600}</script>";
 		assert.equal(parseOpenCodeGoUsageWindow(html, "rolling"), undefined);
 	});
 
 	it("clamps usage percent", () => {
-		const html = "<script>rollingUsage:\$R[0]={usagePercent:150,resetInSec:3600}</script>";
+		const html = "<script>rollingUsage:$R[0]={usagePercent:150,resetInSec:3600}</script>";
 		const result = parseOpenCodeGoUsageWindow(html, "rolling");
 		assert.ok(result !== undefined);
 		assert.equal(result!.usedPercent, 100);
 	});
 
 	it("handles missing resetInSec with zero", () => {
-		const html = "<script>rollingUsage:\$R[0]={usagePercent:30}</script>";
+		const html = "<script>rollingUsage:$R[0]={usagePercent:30}</script>";
 		const result = parseOpenCodeGoUsageWindow(html, "rolling");
 		assert.ok(result !== undefined);
 		assert.equal(result!.usedPercent, 30);
@@ -1993,35 +1848,35 @@ describe("parseOpenCodeGoDashboardUsage", () => {
 		const html = [
 			"<html><body><script>",
 			"var data = {};",
-			"rollingUsage:\$R[0]={usagePercent:20,resetInSec:3600}",
-			"weeklyUsage:\$R[0]={usagePercent:50,resetInSec:604800}",
-			"monthlyUsage:\$R[0]={usagePercent:75,resetInSec:2592000}",
+			"rollingUsage:$R[0]={usagePercent:20,resetInSec:3600}",
+			"weeklyUsage:$R[0]={usagePercent:50,resetInSec:604800}",
+			"monthlyUsage:$R[0]={usagePercent:75,resetInSec:2592000}",
 			"</script></body></html>",
 		].join("\n");
 		const result = parseOpenCodeGoDashboardUsage(html);
-		assert.equal((result as any).error, undefined);
-		assert.equal(result.rollingUsedPercent, 20);
-		assert.equal(result.weeklyUsedPercent, 50);
-		assert.equal(result.monthlyUsedPercent, 75);
+		assert.equal(result.error, undefined);
+		assert.equal(result.rolling?.usedPercent, 20);
+		assert.equal(result.weekly?.usedPercent, 50);
+		assert.equal(result.monthly?.usedPercent, 75);
 	});
 
 	it("parses partial data (only weekly and monthly)", () => {
 		const html = [
 			"<script>",
-			"weeklyUsage:\$R[0]={usagePercent:30,resetInSec:604800}",
-			"monthlyUsage:\$R[0]={usagePercent:60,resetInSec:2592000}",
+			"weeklyUsage:$R[0]={usagePercent:30,resetInSec:604800}",
+			"monthlyUsage:$R[0]={usagePercent:60,resetInSec:2592000}",
 			"</script>",
 		].join("\n");
 		const result = parseOpenCodeGoDashboardUsage(html);
-		assert.equal(result.rollingUsedPercent, undefined);
-		assert.equal(result.weeklyUsedPercent, 30);
-		assert.equal(result.monthlyUsedPercent, 60);
+		assert.equal(result.rolling, undefined);
+		assert.equal(result.weekly?.usedPercent, 30);
+		assert.equal(result.monthly?.usedPercent, 60);
 	});
 
 	it("returns error for unrecognized structure", () => {
 		const html = "<html><body>Not a dashboard page</body></html>";
 		const result = parseOpenCodeGoDashboardUsage(html);
 		assert.ok(result.error!.includes("not recognized"));
-		assert.equal((result as any).rollingUsedPercent, undefined);
+		assert.equal(result.rolling, undefined);
 	});
 });

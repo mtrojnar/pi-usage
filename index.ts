@@ -17,7 +17,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, SubscriptionUsage, UsageContext } from "./src/types.ts";
+import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, SubscriptionUsage, UsageContext, UsageSnapshot } from "./src/types.ts";
 import {
 	ANTHROPIC_PROVIDER,
 	AUTO_REFRESH_MINUTES,
@@ -76,14 +76,6 @@ function normalizeCodexResetTimes(usage: CodexUsage): CodexUsage {
 	return usage;
 }
 
-function normalizeGoResetTimes(usage: OpenCodeGoUsage): OpenCodeGoUsage {
-	const nowSec = nowSeconds();
-	usage.rollingResetAt = resetAtFromAfter(usage.rollingResetAt, usage.rollingResetAfterSeconds, nowSec);
-	usage.weeklyResetAt = resetAtFromAfter(usage.weeklyResetAt, usage.weeklyResetAfterSeconds, nowSec);
-	usage.monthlyResetAt = resetAtFromAfter(usage.monthlyResetAt, usage.monthlyResetAfterSeconds, nowSec);
-	return usage;
-}
-
 function normalizeAnthropicResetTimes(usage: AnthropicUsage): AnthropicUsage {
 	const nowSec = nowSeconds();
 	normalizeWindowResets([usage.fiveHour, usage.weekly], nowSec);
@@ -98,7 +90,8 @@ function normalizeCopilotResetTimes(usage: CopilotUsage): CopilotUsage {
 	return usage;
 }
 
-function normalizeSubscriptionResetTimes(usage: SubscriptionUsage): SubscriptionUsage {
+/** Shared by OpenCode Go and the generic subscription providers. */
+function normalizeSubscriptionResetTimes<T extends SubscriptionUsage>(usage: T): T {
 	const nowSec = nowSeconds();
 	normalizeWindowResets([usage.rolling, usage.weekly, usage.monthly], nowSec);
 	usage.retryResetAt = resetAtFromAfter(usage.retryResetAt, usage.retryAfterSeconds, nowSec);
@@ -190,17 +183,25 @@ export default function (pi: ExtensionAPI) {
 			.filter((usage): usage is SubscriptionUsage => usage !== undefined);
 	}
 
+	function currentSnapshot(): UsageSnapshot {
+		return {
+			codex: codexUsage,
+			anthropic: anthropicUsage,
+			copilot: copilotUsage,
+			go: goUsage,
+			subscriptions: subscriptionUsageList(),
+		};
+	}
+
 	function renderCachedUsage(ctx: UsageContext, loading = false): void {
 		if (!ctx.hasUI) return;
-		const subscriptions = subscriptionUsageList();
+		const snapshot = currentSnapshot();
 		if (isUsageWidgetEnabled(ctx)) {
-			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) =>
-				buildUsageWidget(codexUsage, goUsage, theme, loading, anthropicUsage, copilotUsage, subscriptions),
-			);
+			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) => buildUsageWidget(snapshot, theme, loading));
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
-		updateFooterStatus(ctx, codexUsage, goUsage, anthropicUsage, copilotUsage, subscriptions);
+		updateFooterStatus(ctx, snapshot);
 	}
 
 	function recentCodexUsageRequest(maxAgeSeconds = CODEX_RESPONSE_REFRESH_SECONDS): boolean {
@@ -323,7 +324,7 @@ export default function (pi: ExtensionAPI) {
 			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
 			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
 				runCheck(checkOpenCodeGoUsage(goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)), (result) => {
-					goUsage = normalizeGoResetTimes(result);
+					goUsage = normalizeSubscriptionResetTimes(result);
 				});
 			} else if (!skipGoCheck) {
 				goUsage = undefined;
@@ -358,7 +359,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
-				ctx.ui.notify(buildStartupUsageMessage(codexUsage, goUsage, true, anthropicUsage, copilotUsage, subscriptionUsageList()), "info");
+				ctx.ui.notify(buildStartupUsageMessage(currentSnapshot(), true), "info");
 			}
 		} finally {
 			clearTimeout(refreshTimeout);
@@ -448,7 +449,7 @@ export default function (pi: ExtensionAPI) {
 		if (provider === OPENCODE_GO_PROVIDER || hasHeaderPrefix(event.headers, "x-opencode-go-")) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, modelId, goUsage);
 			if (parsed) {
-				goUsage = normalizeGoResetTimes(parsed);
+				goUsage = normalizeSubscriptionResetTimes(parsed);
 				markPassiveUpdate(OPENCODE_GO_PROVIDER);
 				if (hasGoQuotaData(parsed)) markPassiveUpdate(GO_QUOTA_PASSIVE_KEY);
 				updated = true;
@@ -530,14 +531,3 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 }
-
-// ───────── Re-exported for testing ─────────
-
-export { clampPercent, formatDuration, formatResetTime, parseHeaderBool, parseHeaderNumber, progressBar, statusIcon, truncate, usageColor } from "./src/format.ts";
-export { dedupe, parseBoolValue, parseEnvBool, parseEnvInt, resolveConfigValue } from "./src/config.ts";
-export { parseCodexUsageHeaders, windowMinutes, windowResetAfterSeconds, windowResetAt, windowUsedPercent } from "./src/codex.ts";
-export { isAnthropicModelUnavailable, parseAnthropicResetAt, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
-export { getCopilotBaseUrl, isCopilotModelUnavailable, isCopilotQuotaMessage, normalizeCopilotDomain, parseCopilotResetAt, parseCopilotUsageHeaders } from "./src/copilot.ts";
-export { footerResetDuration, footerUsageColor } from "./src/render.ts";
-export { isGlobalGoLimit, isPerModelUnavailable, parseOpenCodeGoUsageHeaders, resolveModelEndpoint } from "./src/opencode-go.ts";
-export { getSubscriptionApiKey, getSubscriptionCheckModels, isSubscriptionModelUnavailable, isSubscriptionQuotaMessage, parseSubscriptionUsageHeaders, resolveSubscriptionEndpoint } from "./src/subscription-probe.ts";

@@ -8,6 +8,7 @@ import type {
 	OpenCodeGoUsage,
 	SubscriptionUsage,
 	UsageContext,
+	UsageSnapshot,
 } from "./types.ts";
 import { USAGE_WIDGET_HELP } from "./config.ts";
 import {
@@ -55,14 +56,14 @@ const COPILOT_STATUS_TEXT: Record<GoModelStatus, string> = {
 
 // ───────── Shared Line Builders ─────────
 
-function resetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
+export function resetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
 	if (resetAt !== undefined && resetAt > 0) return formatResetTime(resetAt);
 	if (resetAfterSeconds !== undefined && resetAfterSeconds > 0) return formatDuration(resetAfterSeconds);
 	return undefined;
 }
 
 /** Consistent " resets in <duration>" / " resets now" suffix from a reset timestamp or countdown. */
-export function resetPhrase(resetAt?: number, resetAfterSeconds?: number): string {
+function resetPhrase(resetAt?: number, resetAfterSeconds?: number): string {
 	const duration = resetDuration(resetAt, resetAfterSeconds);
 	if (!duration) return "";
 	return duration === "now" ? " resets now" : ` resets in ${duration}`;
@@ -212,24 +213,6 @@ export function renderCopilotWindows(copilot: CopilotUsage, fmt: Fmt, useColor: 
 	];
 }
 
-// ───────── Rendering: Go Windows ─────────
-
-export function renderGoWindows(go: OpenCodeGoUsage, fmt: Fmt, useColor: boolean): string[] {
-	const lines = [
-		...sectionLines(fmt, `${statusIcon(go.status)} OpenCode Go`, STATUS_COLOR[go.status], `— ${GO_STATUS_TEXT[go.status]}`),
-		...windowLines([
-			{ label: "rolling", usedPercent: go.rollingUsedPercent, remainingPercent: go.rollingRemainingPercent, resetAt: go.rollingResetAt, resetAfterSeconds: go.rollingResetAfterSeconds },
-			{ label: "week", usedPercent: go.weeklyUsedPercent, remainingPercent: go.weeklyRemainingPercent, resetAt: go.weeklyResetAt, resetAfterSeconds: go.weeklyResetAfterSeconds },
-			{ label: "month", usedPercent: go.monthlyUsedPercent, remainingPercent: go.monthlyRemainingPercent, resetAt: go.monthlyResetAt, resetAfterSeconds: go.monthlyResetAfterSeconds },
-		], 7, fmt, useColor, " used"),
-	];
-
-	if (go.quotaError) lines.push(`  ${fmt("dim", `quota: ${truncate(go.quotaError, 80)}`)}`);
-	lines.push(...detailLines(go, "Go", false, fmt));
-
-	return lines;
-}
-
 // ───────── Rendering: Generic Subscription Providers ─────────
 
 export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: Fmt, useColor: boolean): string[] {
@@ -251,6 +234,14 @@ export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: 
 	];
 }
 
+// ───────── Rendering: Go Windows ─────────
+
+export function renderGoWindows(go: OpenCodeGoUsage, fmt: Fmt, useColor: boolean): string[] {
+	const lines = renderSubscriptionWindows(go, fmt, useColor);
+	if (go.quotaError) lines.push(`  ${fmt("dim", `quota: ${truncate(go.quotaError, 80)}`)}`);
+	return lines;
+}
+
 // ───────── Report Builder ─────────
 
 interface UsageReportOptions {
@@ -260,25 +251,18 @@ interface UsageReportOptions {
 	helpLine?: string;
 }
 
-function buildUsageReportLines(
-	codex: CodexUsage | undefined,
-	go: OpenCodeGoUsage | undefined,
-	anthropic: AnthropicUsage | undefined,
-	copilot: CopilotUsage | undefined,
-	subscriptions: SubscriptionUsage[],
-	opts: UsageReportOptions,
-): string[] {
+function buildUsageReportLines(snapshot: UsageSnapshot, opts: UsageReportOptions): string[] {
 	const { fmt, bold, useColor, helpLine } = opts;
 	const lines: string[] = [];
 
 	lines.push(bold(fmt("accent", "⚡ Usage Limits")));
 
-	if (codex) lines.push(...renderCodexWindows(codex, fmt, useColor));
-	if (anthropic) lines.push(...renderAnthropicWindows(anthropic, fmt, useColor));
-	if (copilot) lines.push(...renderCopilotWindows(copilot, fmt, useColor));
-	if (go) lines.push(...renderGoWindows(go, fmt, useColor));
-	for (const subscription of subscriptions) {
-		if (subscriptionUsageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
+	if (snapshot.codex) lines.push(...renderCodexWindows(snapshot.codex, fmt, useColor));
+	if (snapshot.anthropic) lines.push(...renderAnthropicWindows(snapshot.anthropic, fmt, useColor));
+	if (snapshot.copilot) lines.push(...renderCopilotWindows(snapshot.copilot, fmt, useColor));
+	if (snapshot.go) lines.push(...renderGoWindows(snapshot.go, fmt, useColor));
+	for (const subscription of snapshot.subscriptions) {
+		if (usageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
 	}
 
 	if (helpLine) {
@@ -291,20 +275,12 @@ function buildUsageReportLines(
 
 // ───────── Widget ─────────
 
-export function buildUsageWidget(
-	codex: CodexUsage | undefined,
-	go: OpenCodeGoUsage | undefined,
-	theme: Theme,
-	loading: boolean,
-	anthropic?: AnthropicUsage,
-	copilot?: CopilotUsage,
-	subscriptions: SubscriptionUsage[] = [],
-): Text {
+export function buildUsageWidget(snapshot: UsageSnapshot, theme: Theme, loading: boolean): Text {
 	if (loading) {
 		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
 	}
 
-	const lines = buildUsageReportLines(codex, go, anthropic, copilot, subscriptions, {
+	const lines = buildUsageReportLines(snapshot, {
 		fmt: (color, text) => theme.fg(color, text),
 		bold: (text) => theme.bold(text),
 		useColor: true,
@@ -315,15 +291,8 @@ export function buildUsageWidget(
 
 // ───────── Startup Message ─────────
 
-export function buildStartupUsageMessage(
-	codex: CodexUsage | undefined,
-	go: OpenCodeGoUsage | undefined,
-	includeHelp: boolean,
-	anthropic?: AnthropicUsage,
-	copilot?: CopilotUsage,
-	subscriptions: SubscriptionUsage[] = [],
-): string {
-	const lines = buildUsageReportLines(codex, go, anthropic, copilot, subscriptions, {
+export function buildStartupUsageMessage(snapshot: UsageSnapshot, includeHelp: boolean): string {
+	const lines = buildUsageReportLines(snapshot, {
 		fmt: (_color, text) => text,
 		bold: (text) => text,
 		useColor: false,
@@ -334,10 +303,6 @@ export function buildStartupUsageMessage(
 }
 
 // ───────── Status Line ─────────
-
-export function footerResetDuration(resetAt?: number, resetAfterSeconds?: number): string | undefined {
-	return resetDuration(resetAt, resetAfterSeconds);
-}
 
 export function footerUsageColor(usedPercent: number): "dim" | "accent" | "warning" | "error" {
 	const rounded = Math.round(clampPercent(usedPercent));
@@ -356,7 +321,7 @@ interface FooterWindow {
 
 /** Compact "42%w/2h" summary for one usage window. */
 function footerWindowSummary(window: FooterWindow & { usedPercent: number }, theme: Theme): string {
-	const reset = footerResetDuration(window.resetAt, window.resetAfterSeconds);
+	const reset = resetDuration(window.resetAt, window.resetAfterSeconds);
 	const used = `${Math.round(clampPercent(window.usedPercent))}%${window.suffix ?? ""}`;
 	return theme.fg(footerUsageColor(window.usedPercent), reset ? `${used}/${reset}` : used);
 }
@@ -377,16 +342,10 @@ function footerSummary(theme: Theme, windows: FooterWindow[], status: GoModelSta
 	return theme.fg("dim", statusIcon(status));
 }
 
-export function updateFooterStatus(
-	ctx: UsageContext,
-	codex: CodexUsage | undefined,
-	go: OpenCodeGoUsage | undefined,
-	anthropic?: AnthropicUsage,
-	copilot?: CopilotUsage,
-	subscriptions: SubscriptionUsage[] = [],
-): void {
+export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): void {
 	if (!ctx.hasUI) return;
 
+	const { codex, anthropic, copilot, go, subscriptions } = snapshot;
 	const theme = ctx.ui.theme;
 	const dim = (text: string) => theme.fg("dim", text);
 	const parts: string[] = [];
@@ -401,27 +360,20 @@ export function updateFooterStatus(
 		]).join(dim(","));
 		addPart("Codex", codex.activeLimit === "rate_limited", summary);
 	}
-	if (anthropicUsageHasData(anthropic)) {
+	if (usageHasData(anthropic)) {
 		addPart("Claude", anthropic.status === "rate_limited", footerSummary(theme, [
 			{ usedPercent: anthropic.fiveHour?.utilizationPercent, resetAt: anthropic.fiveHour?.resetAt, resetAfterSeconds: anthropic.fiveHour?.resetAfterSeconds },
 			{ usedPercent: anthropic.weekly?.utilizationPercent, resetAt: anthropic.weekly?.resetAt, resetAfterSeconds: anthropic.weekly?.resetAfterSeconds },
 		], anthropic.status, anthropic.retryAfterSeconds));
 	}
-	if (copilotUsageHasData(copilot)) {
+	if (usageHasData(copilot)) {
 		addPart("Copilot", copilot.status === "rate_limited" || copilot.status === "credits_error", footerSummary(theme, [
 			{ ...copilot.premiumRequests, suffix: "p" },
 			{ ...copilot.requests, suffix: "r" },
 		], copilot.status, copilot.retryAfterSeconds));
 	}
-	if (goUsageHasData(go)) {
-		addPart("Go", false, footerSummary(theme, [
-			{ usedPercent: go.rollingUsedPercent, resetAt: go.rollingResetAt, resetAfterSeconds: go.rollingResetAfterSeconds, suffix: "r" },
-			{ usedPercent: go.weeklyUsedPercent, resetAt: go.weeklyResetAt, resetAfterSeconds: go.weeklyResetAfterSeconds, suffix: "w" },
-			{ usedPercent: go.monthlyUsedPercent, resetAt: go.monthlyResetAt, resetAfterSeconds: go.monthlyResetAfterSeconds, suffix: "m" },
-		], go.status));
-	}
-	for (const subscription of subscriptions) {
-		if (!subscriptionUsageHasData(subscription)) continue;
+	for (const subscription of [go, ...subscriptions]) {
+		if (!usageHasData(subscription)) continue;
 		addPart(
 			subscription.shortLabel,
 			subscription.status === "rate_limited" || subscription.status === "credits_error",
@@ -446,18 +398,7 @@ export function codexUsageHasData(codex: CodexUsage | undefined): codex is Codex
 	return codex !== undefined && codex.error === undefined && codex.activeLimit !== "error";
 }
 
-export function anthropicUsageHasData(anthropic: AnthropicUsage | undefined): anthropic is AnthropicUsage {
-	return anthropic !== undefined && anthropic.status !== "no_key";
-}
-
-export function copilotUsageHasData(copilot: CopilotUsage | undefined): copilot is CopilotUsage {
-	return copilot !== undefined && copilot.status !== "no_key";
-}
-
-export function subscriptionUsageHasData(subscription: SubscriptionUsage | undefined): subscription is SubscriptionUsage {
-	return subscription !== undefined && subscription.status !== "no_key";
-}
-
-export function goUsageHasData(go: OpenCodeGoUsage | undefined): go is OpenCodeGoUsage {
-	return go !== undefined && go.status !== "no_key";
+/** True when a probe-based provider is configured (anything but no_key). */
+export function usageHasData<T extends { status: GoModelStatus }>(usage: T | undefined): usage is T {
+	return usage !== undefined && usage.status !== "no_key";
 }

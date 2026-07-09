@@ -12,8 +12,8 @@ import {
 	extractAccountId,
 } from "./config.ts";
 import { oauthAccessToken, readStoredCredential } from "./auth.ts";
-import { clampPercent, errorText, parseHeaderBool, parseHeaderNumber } from "./format.ts";
-import { hasHeaderPrefix, headerValue, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
+import { clampPercent, errorText } from "./format.ts";
+import { hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
 import {
 	cancelResponseBody,
 	fetchWithTimeout,

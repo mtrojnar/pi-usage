@@ -52,15 +52,15 @@ export function sortModelsByPreference<T extends { id: string; costRank: number 
 
 /**
  * Resolve the request endpoint for a probe API relative to a base URL.
- * Anthropic endpoints always live under /v1; OpenAI-style endpoints only get
- * a /v1 segment inserted when insertV1 is set.
+ * Anthropic endpoints always live under /v1; OpenAI-style endpoints are
+ * appended to the base path as-is.
  */
-export function resolveProbeEndpoint(baseUrl: string, api: SubscriptionProbeApi, opts: { insertV1?: boolean } = {}): string {
+export function resolveProbeEndpoint(baseUrl: string, api: SubscriptionProbeApi): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
 	const leaf = api === "anthropic-messages" ? "messages" : api === "openai-responses" ? "responses" : "chat/completions";
 	if (normalized.endsWith(`/${leaf}`)) return normalized;
 	if (normalized.endsWith("/v1")) return `${normalized}/${leaf}`;
-	const versionPrefix = api === "anthropic-messages" || opts.insertV1 ? "/v1" : "";
+	const versionPrefix = api === "anthropic-messages" ? "/v1" : "";
 	return `${normalized}${versionPrefix}/${leaf}`;
 }
 

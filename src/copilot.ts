@@ -1,12 +1,12 @@
 import type {
 	CopilotAuth,
 	CopilotOAuthCredential,
-	CopilotProbeApi,
 	CopilotRateLimitWindow,
 	CopilotUsage,
 	CopilotUsageWindowKey,
 	GoModelStatus,
 	SelectedModel,
+	SubscriptionProbeApi,
 } from "./types.ts";
 import {
 	GITHUB_COPILOT_PROBE_MODEL,
@@ -56,7 +56,7 @@ const PREFERRED_COPILOT_PROBE_MODELS = [
 
 interface CopilotCheckModel {
 	id: string;
-	api: CopilotProbeApi;
+	api: SubscriptionProbeApi;
 	endpoint: string;
 	costRank: number;
 }
@@ -117,8 +117,6 @@ export async function getCopilotAuth(): Promise<CopilotAuth | undefined> {
 }
 
 // ───────── Header Parsing ─────────
-
-export { parseResetAtSeconds as parseCopilotResetAt } from "./headers.ts";
 
 function parseCopilotWindowFromPrefix(
 	headers: Record<string, string>,
@@ -226,7 +224,7 @@ export function parseCopilotUsageHeaders(
 // ───────── Model Probing ─────────
 
 function fallbackCopilotModels(auth: CopilotAuth): CopilotCheckModel[] {
-	const fallback: Array<{ id: string; api: CopilotProbeApi }> = [
+	const fallback: Array<{ id: string; api: SubscriptionProbeApi }> = [
 		{ id: GITHUB_COPILOT_PROBE_MODEL, api: "openai-responses" },
 		{ id: "gpt-5-mini", api: "openai-responses" },
 		{ id: "gpt-4.1", api: "openai-completions" },
@@ -284,7 +282,7 @@ async function getCopilotCheckModels(auth: CopilotAuth, preferredModel?: Selecte
 	);
 }
 
-function copilotProbeHeaders(auth: CopilotAuth, api: CopilotProbeApi): Record<string, string> {
+function copilotProbeHeaders(auth: CopilotAuth, api: SubscriptionProbeApi): Record<string, string> {
 	const headers: Record<string, string> = {
 		...COPILOT_HEADERS,
 		"Accept": "application/json",

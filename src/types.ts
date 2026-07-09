@@ -28,7 +28,6 @@ export interface CodexUsage {
 export type GoModelStatus = "available" | "rate_limited" | "credits_error" | "error" | "no_key";
 export type SubscriptionProbeApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 export type GoProbeApi = Extract<SubscriptionProbeApi, "openai-completions" | "anthropic-messages">;
-export type CopilotProbeApi = SubscriptionProbeApi;
 
 export type AnthropicAuthType = "oauth" | "api_key";
 
@@ -132,32 +131,6 @@ export interface AnthropicUsage {
 	error?: string;
 }
 
-export interface OpenCodeGoUsage {
-	available: boolean;
-	status: GoModelStatus;
-	workingModel?: string;
-	rateLimitedModel?: string;
-	checkedModels?: number;
-	totalModels?: number;
-	quotaConfigured?: boolean;
-	quotaSource?: string;
-	rollingUsedPercent?: number;
-	rollingRemainingPercent?: number;
-	rollingResetAfterSeconds?: number;
-	rollingResetAt?: number;
-	weeklyUsedPercent?: number;
-	weeklyRemainingPercent?: number;
-	weeklyResetAfterSeconds?: number;
-	weeklyResetAt?: number;
-	monthlyUsedPercent?: number;
-	monthlyRemainingPercent?: number;
-	monthlyResetAfterSeconds?: number;
-	monthlyResetAt?: number;
-	quotaError?: string;
-	errorMessage?: string;
-	error?: string;
-}
-
 export interface SubscriptionQuotaWindow {
 	usedPercent?: number;
 	remainingPercent?: number;
@@ -186,6 +159,11 @@ export interface SubscriptionUsage {
 	error?: string;
 }
 
+export interface OpenCodeGoUsage extends SubscriptionUsage {
+	/** Dashboard quota fetch/parse failure, shown alongside probe results. */
+	quotaError?: string;
+}
+
 export interface OpenCodeGoQuotaConfig {
 	workspaceId: string;
 	authCookie: string;
@@ -200,22 +178,22 @@ export interface OpenCodeGoQuotaConfigState {
 export interface OpenCodeGoQuotaResult {
 	configured: boolean;
 	source?: string;
-	rollingUsedPercent?: number;
-	rollingRemainingPercent?: number;
-	rollingResetAfterSeconds?: number;
-	rollingResetAt?: number;
-	weeklyUsedPercent?: number;
-	weeklyRemainingPercent?: number;
-	weeklyResetAfterSeconds?: number;
-	weeklyResetAt?: number;
-	monthlyUsedPercent?: number;
-	monthlyRemainingPercent?: number;
-	monthlyResetAfterSeconds?: number;
-	monthlyResetAt?: number;
+	rolling?: SubscriptionQuotaWindow;
+	weekly?: SubscriptionQuotaWindow;
+	monthly?: SubscriptionQuotaWindow;
 	error?: string;
 }
 
 export type RefreshTrigger = "startup" | "manual" | "auto";
+
+/** Cached usage of every provider, as consumed by the report/widget/footer renderers. */
+export interface UsageSnapshot {
+	codex?: CodexUsage;
+	anthropic?: AnthropicUsage;
+	copilot?: CopilotUsage;
+	go?: OpenCodeGoUsage;
+	subscriptions: SubscriptionUsage[];
+}
 
 export interface SelectedModel {
 	provider: string;

@@ -4,6 +4,8 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -12,5 +14,5 @@
     "declarationMap": true,
     "sourceMap": true
   },
-  "include": ["index.ts", "src/**/*.ts"]
+  "include": ["index.ts", "index.test.ts", "src/**/*.ts"]
 }

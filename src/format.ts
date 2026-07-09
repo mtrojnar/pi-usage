@@ -42,16 +42,6 @@ export function usageColor(percent: number): ThemeColor {
 	return "success";
 }
 
-export function parseHeaderNumber(value: string | undefined, fallback: number): number {
-	if (value === undefined || value === "") return fallback;
-	const parsed = Number(value);
-	return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-export function parseHeaderBool(value: string | undefined): boolean {
-	return value?.toLowerCase() === "true";
-}
-
 export function statusIcon(status: GoModelStatus): string {
 	switch (status) {
 		case "available": return "✓";
