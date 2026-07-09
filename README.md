@@ -15,7 +15,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 ### Security Changes
 
 - Private OpenCode Go quota config enforcement on POSIX systems (`0600`) before reading browser auth cookies.
-- Codex OAuth lookup through pi `AuthStorage` without background token refresh, avoiding unbounded startup I/O while preserving pi auth file handling.
+- Codex OAuth lookup through pi `AuthStorage` with a time-bounded token refresh, so an expired token still shows usage without risking unbounded startup I/O.
 - Bounded response-body reads to reduce hang and memory-exhaustion risk.
 
 ### Functional Changes
@@ -98,7 +98,7 @@ Or add to your `settings.json`:
 
 ### Codex
 
-No additional setup needed — pi-usage reads the current OAuth access token that the `openai-codex` provider uses (stored in `$PI_CODING_AGENT_DIR/auth.json`, or `~/.pi/agent/auth.json` by default, from `/login`). If the token is expired, pi-usage skips the Codex check until pi refreshes auth during normal model use.
+No additional setup needed — pi-usage reads the OAuth access token that the `openai-codex` provider uses (stored in `$PI_CODING_AGENT_DIR/auth.json`, or `~/.pi/agent/auth.json` by default, from `/login`). If the token is expired, pi-usage asks pi to refresh it (time-bounded so a stuck refresh can't hang the check).
 
 If you haven't set up Codex yet, run `/login` in pi and select the Codex provider.
 

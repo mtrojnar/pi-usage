@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AuthApiKeyCredential, AuthJson, CodexOAuthCredential, CopilotOAuthCredential } from "./types.ts";
 import { agentDir, resolveConfigValue } from "./config.ts";
+import { unrefTimer } from "./http.ts";
 
 // ───────── pi auth.json Access ─────────
 
@@ -36,6 +37,33 @@ export async function readStoredCredential(provider: string): Promise<StoredCred
 		if (!fs.existsSync(authPath)) return undefined;
 		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 		return AuthStorage.create(authPath).get(provider) as StoredCredential | undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Fetch a provider token via pi's auth storage, allowing pi to refresh an
+ * expired OAuth token (with its usual file locking). Bounded by `timeoutMs`
+ * so a slow or stuck refresh can never hang the caller — the concern that led
+ * `readStoredCredential` to avoid refreshing at all.
+ */
+export async function refreshProviderToken(provider: string, timeoutMs: number): Promise<string | undefined> {
+	try {
+		const authPath = authJsonPath();
+		if (!fs.existsSync(authPath)) return undefined;
+		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
+		const storage = AuthStorage.create(authPath);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const bounded = new Promise<undefined>((resolve) => {
+			timer = setTimeout(() => resolve(undefined), timeoutMs);
+			unrefTimer(timer);
+		});
+		try {
+			return (await Promise.race([storage.getApiKey(provider), bounded])) ?? undefined;
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	} catch {
 		return undefined;
 	}
