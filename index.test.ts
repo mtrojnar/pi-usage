@@ -726,6 +726,17 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.primaryResetAt, 2_000_000_000);
 	});
 
+	it("clears stale Codex status when a successful partial update omits it", () => {
+		const usage = parseCodexUsageHeaders(
+			{ "x-codex-primary-used-percent": "43" },
+			200,
+			makeCodexUsage({ activeLimit: "rate_limited", primaryUsedPercent: 42 }),
+		);
+		assert.ok(usage);
+		assert.equal(usage.activeLimit, "unknown");
+		assert.equal(usage.primaryUsedPercent, 43);
+	});
+
 	it("discards stale absolute Codex resets when a fresh relative reset arrives", () => {
 		const previous = makeCodexUsage({
 			primaryResetAt: 2_000_000_000,

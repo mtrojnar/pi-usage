@@ -150,7 +150,7 @@ export function parseCodexUsageHeaders(
 	const usage: CodexUsage = {
 		...(previous ?? CODEX_USAGE_DEFAULTS),
 		activeLimit: getHeader("x-codex-active-limit")
-			?? (status === 429 ? "rate_limited" : previous?.activeLimit ?? "unknown"),
+			?? (status === 429 ? "rate_limited" : "unknown"),
 		source: "headers",
 	};
 	delete usage.error;
