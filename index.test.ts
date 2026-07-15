@@ -824,6 +824,20 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.primaryResetAt, 0);
 	});
 
+	it("clears a stale primary reset when Retry-After is zero", () => {
+		const usage = parseCodexUsageHeaders(
+			{ "retry-after": "0" },
+			429,
+			makeCodexUsage({
+				primaryResetAfterSeconds: 3600,
+				primaryResetAt: 2_000_000_000,
+			}),
+		);
+		assert.ok(usage);
+		assert.equal(usage.primaryResetAfterSeconds, 0);
+		assert.equal(usage.primaryResetAt, 0);
+	});
+
 	it("returns undefined when no relevant headers", () => {
 		assert.equal(parseCodexUsageHeaders({ server: "test" }, 200), undefined);
 	});

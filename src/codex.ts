@@ -195,8 +195,9 @@ export function parseCodexUsageHeaders(
 	setString("x-codex-credits-balance", (value) => { usage.creditsBalance = value; });
 	setBool("x-codex-credits-unlimited", (value) => { usage.creditsUnlimited = value; });
 
-	const retryAfterSeconds = parseRetryAfterSeconds(getHeader("retry-after"));
-	if (getHeader("x-codex-primary-reset-after-seconds") === undefined && retryAfterSeconds > 0) {
+	const retryAfterHeader = getHeader("retry-after");
+	const retryAfterSeconds = parseRetryAfterSeconds(retryAfterHeader);
+	if (getHeader("x-codex-primary-reset-after-seconds") === undefined && retryAfterHeader !== undefined) {
 		usage.primaryResetAfterSeconds = retryAfterSeconds;
 		if (getHeader("x-codex-primary-reset-at") === undefined) usage.primaryResetAt = 0;
 	}
