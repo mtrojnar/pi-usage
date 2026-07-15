@@ -202,7 +202,7 @@ These checks make minimal 1-token model requests and are skipped on auto-refresh
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go/OpenCode Zen/compatible-provider status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 5-minute activity window: refresh Codex usage when Codex data flowed during the window, or after six consecutive clean windows (30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go/OpenCode Zen/compatible-provider status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 1-minute activity window: refresh Codex usage when Codex data flowed during the window, or after enough clean windows to match the normal auto-refresh interval (30 clean windows / 30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
 
 By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Copilot`, `Go`, `Zen`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
@@ -287,7 +287,7 @@ If that endpoint fails, pi-usage falls back to the older Codex backend header pr
 
 The fallback makes a **minimal streaming request** (model: `gpt-5.4-mini`, instruction: "ok", input: "hi") to capture these headers. It should only run when the usage endpoint is unavailable.
 
-During normal Codex model use, pi-usage passively reads the same `x-codex-*` headers from pi's `after_provider_response` extension event and updates cached values immediately. `429` responses with `retry-after` are also reflected as rate-limited status. When Codex uses WebSocket transport, response headers are unavailable, so pi-usage performs a lightweight ChatGPT usage-endpoint refresh on dirty 5-minute windows, or after six clean windows by default.
+During normal Codex model use, pi-usage passively reads the same `x-codex-*` headers from pi's `after_provider_response` extension event and updates cached values immediately. `429` responses with `retry-after` are also reflected as rate-limited status. When Codex uses WebSocket transport, response headers are unavailable, so pi-usage performs a lightweight ChatGPT usage-endpoint refresh on dirty 1-minute windows, or after enough clean windows to match the normal auto-refresh interval by default.
 
 ### Anthropic Claude
 
@@ -370,7 +370,7 @@ Widget display uses pi-style extension config files:
 | `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds |
 | `PI_USAGE_PROACTIVE` | `true` | Run startup and periodic network checks; set `false` for passive headers plus manual `/usage` only |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH` | same as `PI_USAGE_PROACTIVE` | Refresh Codex usage endpoint while Codex responses transfer data; useful because WebSocket transport has no usage headers |
-| `PI_USAGE_CODEX_RESPONSE_REFRESH_SEC` | `300` | Codex activity-window length; dirty windows refresh usage, six clean windows produce idle refresh by default |
+| `PI_USAGE_CODEX_RESPONSE_REFRESH_SEC` | `60` | Codex activity-window length; dirty windows refresh usage, and clean windows produce an idle refresh after the normal auto-refresh interval |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `ANTHROPIC_OAUTH_TOKEN` | unset | Optional Anthropic OAuth token override for Claude Pro/Max checks |
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
