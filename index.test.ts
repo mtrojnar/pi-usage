@@ -50,6 +50,7 @@ import {
 	cancelResponseBody,
 	readResponseText,
 } from "./src/http.ts";
+import { mergeConcurrentFields } from "./src/concurrent.ts";
 import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
@@ -135,6 +136,45 @@ function makeGoUsage(overrides: Partial<OpenCodeGoUsage> = {}): OpenCodeGoUsage 
 		...overrides,
 	};
 }
+
+// ───────── mergeConcurrentFields ─────────
+
+describe("mergeConcurrentFields", () => {
+	interface Usage {
+		status: string;
+		quota?: number;
+		error?: string;
+	}
+
+	it("merges refreshed fields without overwriting a newer passive status", () => {
+		const before: Usage = { status: "available", quota: 10 };
+		const current: Usage = { status: "rate_limited", quota: 10 };
+		const result: Usage = { status: "available", quota: 20, error: "stale error" };
+
+		assert.deepEqual(mergeConcurrentFields(result, before, current, ["quota"]), {
+			status: "rate_limited",
+			quota: 20,
+		});
+	});
+
+	it("preserves a field changed by the passive update", () => {
+		const before: Usage = { status: "available", quota: 10 };
+		const current: Usage = { status: "available", quota: 25 };
+		const result: Usage = { status: "available", quota: 20 };
+
+		assert.equal(mergeConcurrentFields(result, before, current, ["quota"]).quota, 25);
+	});
+
+	it("fills fields missing from the first passive update", () => {
+		const current: Usage = { status: "available" };
+		const result: Usage = { status: "available", quota: 20 };
+
+		assert.deepEqual(mergeConcurrentFields(result, undefined, current, ["quota"]), {
+			status: "available",
+			quota: 20,
+		});
+	});
+});
 
 // ───────── parseEnvInt ─────────
 

@@ -37,6 +37,7 @@ import {
 } from "./src/config.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
 import { unrefTimer } from "./src/http.ts";
+import { mergeConcurrentFields } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
@@ -122,6 +123,34 @@ function stopTimer(timer: TimerHandle | undefined): undefined {
 	if (timer !== undefined) clearInterval(timer);
 	return undefined;
 }
+
+// ───────── Concurrent Refresh Merging ─────────
+
+const CODEX_REFRESH_FIELDS = [
+	"planType",
+	"primaryUsedPercent", "secondaryUsedPercent", "codeReviewUsedPercent",
+	"primaryWindowMinutes", "secondaryWindowMinutes", "codeReviewWindowMinutes",
+	"primaryResetAfterSeconds", "secondaryResetAfterSeconds", "codeReviewResetAfterSeconds",
+	"primaryResetAt", "secondaryResetAt", "codeReviewResetAt",
+	"primaryOverSecondaryLimitPercent",
+	"creditsHasCredits", "creditsBalance", "creditsUnlimited",
+] as const satisfies readonly (keyof CodexUsage)[];
+
+const ANTHROPIC_REFRESH_FIELDS = [
+	"authType", "fiveHour", "weekly", "checkedModels", "totalModels",
+] as const satisfies readonly (keyof AnthropicUsage)[];
+
+const COPILOT_REFRESH_FIELDS = [
+	"requests", "premiumRequests", "availableModels", "checkedModels", "totalModels",
+] as const satisfies readonly (keyof CopilotUsage)[];
+
+const SUBSCRIPTION_REFRESH_FIELDS = [
+	"rolling", "weekly", "monthly", "quotaSource", "checkedModels", "totalModels",
+] as const satisfies readonly (keyof SubscriptionUsage)[];
+
+const GO_REFRESH_FIELDS = [
+	...SUBSCRIPTION_REFRESH_FIELDS, "quotaError",
+] as const satisfies readonly (keyof OpenCodeGoUsage)[];
 
 // ───────── Extension ─────────
 
@@ -223,6 +252,7 @@ export default function (pi: ExtensionAPI) {
 		if (generation !== sessionGeneration || recentCodexUsageRequest()) return;
 
 		const passiveRevision = passiveHeaderRevision(OPENAI_CODEX_PROVIDER);
+		const before = codexUsage;
 		codexResponseRefreshController?.abort();
 		const controller = new AbortController();
 		codexResponseRefreshController = controller;
@@ -235,13 +265,11 @@ export default function (pi: ExtensionAPI) {
 				codexUsageRequestAt = Date.now();
 				codexResponseCleanTicks = 0;
 				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal);
-				if (
-					result.success
-					&& !controller.signal.aborted
-					&& generation === sessionGeneration
-					&& passiveHeaderRevision(OPENAI_CODEX_PROVIDER) === passiveRevision
-				) {
-					codexUsage = normalizeCodexResetTimes(result.usage);
+				if (result.success && !controller.signal.aborted && generation === sessionGeneration) {
+					const usage = passiveHeaderRevision(OPENAI_CODEX_PROVIDER) === passiveRevision
+						? result.usage
+						: mergeConcurrentFields(result.usage, before, codexUsage, CODEX_REFRESH_FIELDS);
+					codexUsage = normalizeCodexResetTimes(usage);
 					widgetLoading = false;
 					renderCachedUsage(ctx, false);
 				}
@@ -282,15 +310,22 @@ export default function (pi: ExtensionAPI) {
 			const checks: Promise<void>[] = [];
 			const signal = controller.signal;
 
-			// Run a check in parallel; discard it if newer passive headers arrive.
-			const runCheck = <T>(provider: string, check: Promise<T>, apply: (result: T) => void): void => {
+			// Run a check in parallel. If passive headers arrive first, preserve their
+			// status while still accepting independently refreshed quota fields.
+			const runCheck = <T extends object>(
+				provider: string,
+				check: Promise<T>,
+				current: () => T | undefined,
+				refreshFields: readonly (keyof T)[],
+				apply: (result: T) => void,
+			): void => {
 				const passiveRevision = passiveHeaderRevision(provider);
+				const before = current();
 				checks.push(check.then((result) => {
-					if (
-						!signal.aborted
-						&& generation === sessionGeneration
-						&& passiveHeaderRevision(provider) === passiveRevision
-					) apply(result);
+					if (signal.aborted || generation !== sessionGeneration) return;
+					apply(passiveHeaderRevision(provider) === passiveRevision
+						? result
+						: mergeConcurrentFields(result, before, current(), refreshFields));
 				}));
 			};
 
@@ -305,18 +340,26 @@ export default function (pi: ExtensionAPI) {
 			if (codexAuth) {
 				codexUsageRequestAt = Date.now();
 				codexResponseCleanTicks = 0;
-				runCheck(OPENAI_CODEX_PROVIDER, checkCodexUsage(codexAuth.token, codexAuth.accountId, signal), (result) => {
-					codexUsage = normalizeCodexResetTimes(result);
-				});
+				runCheck(
+					OPENAI_CODEX_PROVIDER,
+					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal),
+					() => codexUsage,
+					CODEX_REFRESH_FIELDS,
+					(result) => { codexUsage = normalizeCodexResetTimes(result); },
+				);
 			}
 
 			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
 			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(ANTHROPIC_PROVIDER);
 			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth();
 			if (anthropicAuth) {
-				runCheck(ANTHROPIC_PROVIDER, checkAnthropicUsage(anthropicAuth, signal, selected), (result) => {
-					anthropicUsage = normalizeAnthropicResetTimes(result);
-				});
+				runCheck(
+					ANTHROPIC_PROVIDER,
+					checkAnthropicUsage(anthropicAuth, signal, selected),
+					() => anthropicUsage,
+					ANTHROPIC_REFRESH_FIELDS,
+					(result) => { anthropicUsage = normalizeAnthropicResetTimes(result); },
+				);
 			} else if (!skipAnthropicCheck) {
 				anthropicUsage = undefined;
 			}
@@ -325,9 +368,13 @@ export default function (pi: ExtensionAPI) {
 			const skipCopilotCheck = trigger === "auto" && passiveUpdateIsFresh(GITHUB_COPILOT_PROVIDER);
 			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth();
 			if (copilotAuth) {
-				runCheck(GITHUB_COPILOT_PROVIDER, checkCopilotUsage(copilotAuth, signal, selected), (result) => {
-					copilotUsage = normalizeCopilotResetTimes(result);
-				});
+				runCheck(
+					GITHUB_COPILOT_PROVIDER,
+					checkCopilotUsage(copilotAuth, signal, selected),
+					() => copilotUsage,
+					COPILOT_REFRESH_FIELDS,
+					(result) => { copilotUsage = normalizeCopilotResetTimes(result); },
+				);
 			} else if (!skipCopilotCheck) {
 				copilotUsage = undefined;
 			}
@@ -340,9 +387,13 @@ export default function (pi: ExtensionAPI) {
 				&& !goQuotaState.error;
 			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
 			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
-				runCheck(OPENCODE_GO_PROVIDER, checkOpenCodeGoUsage(goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)), (result) => {
-					goUsage = normalizeSubscriptionResetTimes(result);
-				});
+				runCheck(
+					OPENCODE_GO_PROVIDER,
+					checkOpenCodeGoUsage(goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
+					() => goUsage,
+					GO_REFRESH_FIELDS,
+					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
+				);
 			} else if (!skipGoCheck) {
 				goUsage = undefined;
 			}
@@ -355,13 +406,19 @@ export default function (pi: ExtensionAPI) {
 					subscriptionUsages.delete(providerConfig.provider);
 					continue;
 				}
-				runCheck(providerConfig.provider, checkSubscriptionProviderUsage(providerConfig, apiKey, signal, preferredFor(providerConfig.provider)), (result) => {
-					if (result.status === "no_key") {
-						subscriptionUsages.delete(providerConfig.provider);
-					} else {
-						subscriptionUsages.set(providerConfig.provider, normalizeSubscriptionResetTimes(result));
-					}
-				});
+				runCheck(
+					providerConfig.provider,
+					checkSubscriptionProviderUsage(providerConfig, apiKey, signal, preferredFor(providerConfig.provider)),
+					() => subscriptionUsages.get(providerConfig.provider),
+					SUBSCRIPTION_REFRESH_FIELDS,
+					(result) => {
+						if (result.status === "no_key") {
+							subscriptionUsages.delete(providerConfig.provider);
+						} else {
+							subscriptionUsages.set(providerConfig.provider, normalizeSubscriptionResetTimes(result));
+						}
+					},
+				);
 			}
 
 			await Promise.allSettled(checks);
