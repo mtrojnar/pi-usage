@@ -1558,8 +1558,7 @@ describe("buildUsageWidget", () => {
 		bold: (text: string) => text,
 	} as any;
 
-	/** Read the private text content of a rendered Text widget. */
-	const widgetText = (widget: unknown): string => (widget as { text: string }).text;
+	const widgetText = (widget: string[]): string => widget.join("\n");
 
 	it("renders loading state", () => {
 		const result = buildUsageWidget({ subscriptions: [] }, mockTheme, true);

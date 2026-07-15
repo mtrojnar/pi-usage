@@ -1,5 +1,4 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import type {
 	AnthropicUsage,
 	CodexUsage,
@@ -275,18 +274,16 @@ function buildUsageReportLines(snapshot: UsageSnapshot, opts: UsageReportOptions
 
 // ───────── Widget ─────────
 
-export function buildUsageWidget(snapshot: UsageSnapshot, theme: Theme, loading: boolean): Text {
+export function buildUsageWidget(snapshot: UsageSnapshot, theme: Theme, loading: boolean): string[] {
 	if (loading) {
-		return new Text(theme.fg("muted", "⚡ Checking usage limits..."), 0, 0);
+		return [theme.fg("muted", "⚡ Checking usage limits...")];
 	}
 
-	const lines = buildUsageReportLines(snapshot, {
+	return buildUsageReportLines(snapshot, {
 		fmt: (color, text) => theme.fg(color, text),
 		bold: (text) => theme.bold(text),
 		useColor: true,
 	});
-
-	return new Text(lines.join("\n"), 0, 0);
 }
 
 // ───────── Startup Message ─────────

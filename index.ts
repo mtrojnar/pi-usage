@@ -16,7 +16,7 @@
  *   OpenCode Zen / compatible providers: Uses API keys from auth.json/env
  */
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, SubscriptionUsage, UsageContext, UsageSnapshot } from "./src/types.ts";
 import {
 	ANTHROPIC_PROVIDER,
@@ -197,7 +197,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		const snapshot = currentSnapshot();
 		if (isUsageWidgetEnabled(ctx)) {
-			ctx.ui.setWidget(WIDGET_ID, (_tui: unknown, theme: Theme) => buildUsageWidget(snapshot, theme, loading));
+			ctx.ui.setWidget(WIDGET_ID, buildUsageWidget(snapshot, ctx.ui.theme, loading));
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
