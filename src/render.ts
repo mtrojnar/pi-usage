@@ -140,7 +140,7 @@ function detailLines(usage: ProbeDetails, modelNoun: string, hasWindowData: bool
 // ───────── Rendering: Codex Windows ─────────
 
 export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolean): string[] {
-	if (codex.error && codex.activeLimit === "error") {
+	if (codex.error && !codex.rateLimited) {
 		return sectionLines(fmt, "✗ Codex", "error", `— ${truncate(codex.error, 120)}`);
 	}
 
@@ -148,6 +148,7 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 	const limitLabel = codex.activeLimit !== "unknown" && codex.activeLimit !== "normal"
 		? ` [${codex.activeLimit}]`
 		: "";
+	const rateLimitLabel = codex.rateLimited ? " [rate_limited]" : "";
 	const primaryLabel = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
 	const windows: UsageWindowLine[] = [
 		{ label: primaryLabel, usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
@@ -157,12 +158,12 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 
 	const lines = [
 		fmt("dim", DIVIDER),
-		`${fmt("accent", "Codex")}${fmt("dim", planLabel + limitLabel)}`,
+		`${fmt("accent", "Codex")}${fmt("dim", planLabel + limitLabel + rateLimitLabel)}`,
 		...windowLines(windows, 6, fmt, useColor),
 	];
 
 	const retryDuration = resetDuration(codex.primaryResetAt, codex.primaryResetAfterSeconds);
-	if (codex.activeLimit === "rate_limited" && codex.primaryUsedPercent === undefined && retryDuration) {
+	if (codex.rateLimited && codex.primaryUsedPercent === undefined && retryDuration) {
 		lines.push(`  ${fmt("warning", `retry: ${retryDuration}`)}`);
 	}
 	if (codex.creditsHasCredits && codex.creditsBalance) {
@@ -365,7 +366,7 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 	};
 
 	if (codexUsageHasData(codex)) {
-		const limited = codex.activeLimit === "rate_limited";
+		const limited = codex.rateLimited;
 		const quotaParts = footerQuotaParts(theme, [
 			{ usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
 			{ usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
@@ -415,9 +416,7 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 // ───────── Data Presence Guards ─────────
 
 export function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage {
-	return codex !== undefined
-		&& codex.activeLimit !== "error"
-		&& (codex.error === undefined || codex.activeLimit === "rate_limited");
+	return codex !== undefined && (codex.error === undefined || codex.rateLimited);
 }
 
 /** True when a probe-based provider is configured (anything but no_key). */

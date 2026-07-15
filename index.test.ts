@@ -109,7 +109,8 @@ const identity = (_color: string, text: string): string => text;
 function makeCodexUsage(overrides: Partial<CodexUsage> = {}): CodexUsage {
 	return {
 		planType: "unknown",
-		activeLimit: "normal",
+		activeLimit: "unknown",
+		rateLimited: false,
 		primaryUsedPercent: 0,
 		secondaryUsedPercent: 0,
 		primaryWindowMinutes: 300,
@@ -761,10 +762,14 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.source, "headers");
 	});
 
-	it("parses Codex 429 retry-after without fabricating quota percentages", () => {
-		const usage = parseCodexUsageHeaders({ "retry-after": "30" }, 429);
+	it("parses Codex 429 retry-after without confusing the active tier with status", () => {
+		const usage = parseCodexUsageHeaders({
+			"x-codex-active-limit": "premium",
+			"retry-after": "30",
+		}, 429);
 		assert.ok(usage);
-		assert.equal(usage.activeLimit, "rate_limited");
+		assert.equal(usage.activeLimit, "premium");
+		assert.equal(usage.rateLimited, true);
 		assert.equal(usage.primaryUsedPercent, undefined);
 		assert.equal(usage.secondaryUsedPercent, undefined);
 		assert.equal(usage.primaryResetAfterSeconds, 30);
@@ -785,14 +790,15 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.primaryResetAt, 2_000_000_000);
 	});
 
-	it("clears stale Codex status when a successful partial update omits it", () => {
+	it("clears stale Codex rate-limit status without clearing the active tier", () => {
 		const usage = parseCodexUsageHeaders(
 			{ "x-codex-primary-used-percent": "43" },
 			200,
-			makeCodexUsage({ activeLimit: "rate_limited", primaryUsedPercent: 42 }),
+			makeCodexUsage({ activeLimit: "premium", rateLimited: true, primaryUsedPercent: 42 }),
 		);
 		assert.ok(usage);
-		assert.equal(usage.activeLimit, "unknown");
+		assert.equal(usage.activeLimit, "premium");
+		assert.equal(usage.rateLimited, false);
 		assert.equal(usage.primaryUsedPercent, 43);
 	});
 
@@ -1339,15 +1345,12 @@ describe("codexUsageHasData", () => {
 		assert.equal(codexUsageHasData(makeCodexUsage({ error: "some error" })), false);
 	});
 
-	it("returns true for a rate limit with an error detail", () => {
+	it("returns true for a rate limit with an active tier and error detail", () => {
 		assert.equal(codexUsageHasData(makeCodexUsage({
-			activeLimit: "rate_limited",
+			activeLimit: "premium",
+			rateLimited: true,
 			error: "Rate limited (429)",
 		})), true);
-	});
-
-	it("returns false when activeLimit is error", () => {
-		assert.equal(codexUsageHasData(makeCodexUsage({ activeLimit: "error" })), false);
 	});
 });
 
@@ -1505,7 +1508,7 @@ describe("renderCodexWindows", () => {
 
 	it("renders error state", () => {
 		const result = renderCodexWindows(
-			makeCodexUsage({ activeLimit: "error", source: "probe", error: "API connection failed" }),
+			makeCodexUsage({ source: "probe", error: "API connection failed" }),
 			identity,
 			false,
 		);
@@ -1513,10 +1516,11 @@ describe("renderCodexWindows", () => {
 		assert.match(result.join("\n"), /API connection failed/);
 	});
 
-	it("shows rate_limited label", () => {
+	it("shows the active tier and rate_limited label", () => {
 		const result = renderCodexWindows(
 			makeCodexUsage({
-				activeLimit: "rate_limited",
+				activeLimit: "premium",
+				rateLimited: true,
 				primaryUsedPercent: 100,
 				secondaryUsedPercent: 50,
 				primaryResetAt: Math.floor(Date.now() / 1000) + 300,
@@ -1526,13 +1530,15 @@ describe("renderCodexWindows", () => {
 			identity,
 			false,
 		);
-		assert.match(result.join("\n"), /rate_limited/);
+		const joined = result.join("\n");
+		assert.match(joined, /premium/);
+		assert.match(joined, /rate_limited/);
 	});
 
 	it("renders a retry countdown when rate limited without quota percentages", () => {
 		const result = renderCodexWindows(
 			makeCodexUsage({
-				activeLimit: "rate_limited",
+				rateLimited: true,
 				primaryUsedPercent: undefined,
 				secondaryUsedPercent: undefined,
 				primaryResetAfterSeconds: 30,
@@ -1546,7 +1552,7 @@ describe("renderCodexWindows", () => {
 	it("renders a primary retry countdown alongside a cached secondary quota", () => {
 		const result = renderCodexWindows(
 			makeCodexUsage({
-				activeLimit: "rate_limited",
+				rateLimited: true,
 				primaryUsedPercent: undefined,
 				secondaryUsedPercent: 55,
 				primaryResetAfterSeconds: 30,
@@ -1572,7 +1578,8 @@ describe("updateFooterStatus", () => {
 			},
 		} as any;
 		const codex = makeCodexUsage({
-			activeLimit: "rate_limited",
+			activeLimit: "premium",
+			rateLimited: true,
 			primaryUsedPercent: undefined,
 			secondaryUsedPercent: undefined,
 			primaryResetAfterSeconds: 30,
@@ -1594,7 +1601,8 @@ describe("updateFooterStatus", () => {
 			},
 		} as any;
 		const codex = makeCodexUsage({
-			activeLimit: "rate_limited",
+			activeLimit: "premium",
+			rateLimited: true,
 			primaryUsedPercent: undefined,
 			secondaryUsedPercent: 55,
 			primaryResetAfterSeconds: 30,

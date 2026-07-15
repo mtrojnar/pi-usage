@@ -92,7 +92,8 @@ export async function checkCodexUsageFromUsageApi(token: string, accountId: stri
 		const codeReview = data.code_review_rate_limit?.primary_window;
 		const usage: CodexUsage = {
 			planType: data.plan_type ?? "unknown",
-			activeLimit: data.rate_limit?.limit_reached ? "rate_limited" : "normal",
+			activeLimit: "unknown",
+			rateLimited: Boolean(data.rate_limit?.limit_reached),
 			primaryUsedPercent: windowUsedPercent(primary),
 			secondaryUsedPercent: windowUsedPercent(secondary),
 			codeReviewUsedPercent: codeReview ? windowUsedPercent(codeReview) : undefined,
@@ -122,6 +123,7 @@ export async function checkCodexUsageFromUsageApi(token: string, accountId: stri
 const CODEX_USAGE_DEFAULTS: CodexUsage = {
 	planType: "unknown",
 	activeLimit: "unknown",
+	rateLimited: false,
 	primaryUsedPercent: undefined,
 	secondaryUsedPercent: undefined,
 	primaryWindowMinutes: 300,
@@ -137,7 +139,7 @@ const CODEX_USAGE_DEFAULTS: CodexUsage = {
 	source: "probe",
 };
 
-const PROBE_ERROR_BASE: CodexUsage = { ...CODEX_USAGE_DEFAULTS, activeLimit: "error" };
+const PROBE_ERROR_BASE: CodexUsage = { ...CODEX_USAGE_DEFAULTS };
 
 export function parseCodexUsageHeaders(
 	headers: Record<string, string>,
@@ -149,8 +151,7 @@ export function parseCodexUsageHeaders(
 
 	const usage: CodexUsage = {
 		...(previous ?? CODEX_USAGE_DEFAULTS),
-		activeLimit: getHeader("x-codex-active-limit")
-			?? (status === 429 ? "rate_limited" : "unknown"),
+		rateLimited: status === 429,
 		source: "headers",
 	};
 	delete usage.error;
@@ -169,6 +170,7 @@ export function parseCodexUsageHeaders(
 	};
 
 	setString("x-codex-plan-type", (value) => { usage.planType = value; });
+	setString("x-codex-active-limit", (value) => { usage.activeLimit = value; });
 	setNumber("x-codex-primary-used-percent", (value) => { usage.primaryUsedPercent = value; });
 	setNumber("x-codex-secondary-used-percent", (value) => { usage.secondaryUsedPercent = value; });
 	setNumber("x-codex-code-review-used-percent", (value) => { usage.codeReviewUsedPercent = value; });
@@ -271,7 +273,7 @@ export async function checkCodexUsage(token: string, accountId: string, signal?:
 	}
 
 	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal);
-	if (probeResult.error && probeResult.activeLimit === "error") {
+	if (probeResult.error && !probeResult.rateLimited) {
 		probeResult.error = `${usageApiResult.error}; fallback probe: ${probeResult.error}`;
 	}
 	return probeResult;

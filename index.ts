@@ -127,7 +127,7 @@ function stopTimer(timer: TimerHandle | undefined): undefined {
 // ───────── Concurrent Refresh Merging ─────────
 
 const CODEX_REFRESH_FIELDS = [
-	"planType",
+	"planType", "activeLimit",
 	"primaryUsedPercent", "secondaryUsedPercent", "codeReviewUsedPercent",
 	"primaryWindowMinutes", "secondaryWindowMinutes", "codeReviewWindowMinutes",
 	"primaryResetAfterSeconds", "secondaryResetAfterSeconds", "codeReviewResetAfterSeconds",
@@ -153,7 +153,7 @@ const GO_REFRESH_FIELDS = [
 ] as const satisfies readonly (keyof OpenCodeGoUsage)[];
 
 function codexRefreshIsAuthoritative(result: CodexUsage): boolean {
-	return result.activeLimit !== "error";
+	return result.error === undefined || result.rateLimited;
 }
 
 function probeRefreshIsAuthoritative(result: { status: string }): boolean {

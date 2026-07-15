@@ -4,7 +4,8 @@ import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 export interface CodexUsage {
 	planType: string;
-	activeLimit: string;
+	activeLimit: string;             // active limit tier (for example "premium")
+	rateLimited: boolean;
 	primaryUsedPercent?: number;     // 5hr window
 	secondaryUsedPercent?: number;   // weekly window
 	codeReviewUsedPercent?: number;
