@@ -41,8 +41,21 @@ import { mergeConcurrentFields } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
-import { getOpenCodeApiKey, checkOpenCodeGoUsage, hasGoQuotaData, hasOpenCodeGoQuotaHeaders, parseOpenCodeGoUsageHeaders, reconcileOpenCodeGoRefresh } from "./src/opencode-go.ts";
-import { checkSubscriptionProviderUsage, getSubscriptionApiKey, parseSubscriptionUsageHeaders } from "./src/subscription-probe.ts";
+import {
+	checkOpenCodeGoUsage,
+	getOpenCodeApiKey,
+	getOpenCodeGoQuotaHeaderWindows,
+	hasCompleteGoQuotaData,
+	parseOpenCodeGoUsageHeaders,
+	reconcileOpenCodeGoRefresh,
+} from "./src/opencode-go.ts";
+import {
+	checkSubscriptionProviderUsage,
+	getSubscriptionApiKey,
+	parseSubscriptionUsageHeaders,
+	QUOTA_WINDOW_KINDS,
+	type QuotaWindowKind,
+} from "./src/subscription-probe.ts";
 import { getSubscriptionProviderConfig, SUBSCRIPTION_PROVIDERS } from "./src/subscriptions.ts";
 import {
 	buildStartupUsageMessage,
@@ -124,6 +137,10 @@ function stopTimer(timer: TimerHandle | undefined): undefined {
 	return undefined;
 }
 
+function goQuotaPassiveKey(window: QuotaWindowKind): string {
+	return `${OPENCODE_GO_PROVIDER}:quota:${window}`;
+}
+
 // ───────── Concurrent Refresh Merging ─────────
 
 const CODEX_REFRESH_FIELDS = [
@@ -198,7 +215,6 @@ export default function (pi: ExtensionAPI) {
 	// Timestamps and revisions of passive response-header updates, keyed by provider.
 	const passiveHeadersAt = new Map<string, number>();
 	const passiveHeaderRevisions = new Map<string, number>();
-	const GO_QUOTA_PASSIVE_KEY = `${OPENCODE_GO_PROVIDER}:quota`;
 
 	function passiveHeaderRevision(key: string): number {
 		return passiveHeaderRevisions.get(key) ?? 0;
@@ -212,6 +228,11 @@ export default function (pi: ExtensionAPI) {
 	function passiveUpdateIsFresh(key: string): boolean {
 		const at = passiveHeadersAt.get(key) ?? 0;
 		return at > 0 && Date.now() - at < AUTO_REFRESH_MINUTES * 60 * 1000;
+	}
+
+	function goQuotaUpdateIsFresh(): boolean {
+		return hasCompleteGoQuotaData(goUsage)
+			&& QUOTA_WINDOW_KINDS.every((window) => passiveUpdateIsFresh(goQuotaPassiveKey(window)));
 	}
 
 	function isUsageWidgetEnabled(ctx: UsageContext): boolean {
@@ -403,7 +424,7 @@ export default function (pi: ExtensionAPI) {
 			const goQuotaState = getOpenCodeGoQuotaConfig();
 			const skipGoCheck = trigger === "auto"
 				&& passiveUpdateIsFresh(OPENCODE_GO_PROVIDER)
-				&& (!goQuotaState.config || (hasGoQuotaData(goUsage) && passiveUpdateIsFresh(GO_QUOTA_PASSIVE_KEY)))
+				&& (!goQuotaState.config || goQuotaUpdateIsFresh())
 				&& !goQuotaState.error;
 			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
 			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
@@ -548,7 +569,9 @@ export default function (pi: ExtensionAPI) {
 			if (parsed) {
 				goUsage = normalizeSubscriptionResetTimes(parsed);
 				markPassiveUpdate(OPENCODE_GO_PROVIDER);
-				if (hasOpenCodeGoQuotaHeaders(event.headers)) markPassiveUpdate(GO_QUOTA_PASSIVE_KEY);
+				for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
+					markPassiveUpdate(goQuotaPassiveKey(window));
+				}
 				updated = true;
 			}
 		}

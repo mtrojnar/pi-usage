@@ -103,7 +103,8 @@ export async function getSubscriptionCheckModels(
 
 // ───────── Header Parsing ─────────
 
-export type QuotaWindowKind = "rolling" | "weekly" | "monthly";
+export const QUOTA_WINDOW_KINDS = ["rolling", "weekly", "monthly"] as const;
+export type QuotaWindowKind = (typeof QUOTA_WINDOW_KINDS)[number];
 
 /**
  * Parse one passive quota window from x-<prefix>[-quota]-<window>-<metric>

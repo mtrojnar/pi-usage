@@ -15,8 +15,10 @@ import {
 	getSubscriptionApiKey,
 	parseQuotaWindow,
 	parseSubscriptionUsageHeaders,
+	QUOTA_WINDOW_KINDS,
+	type QuotaWindowKind,
+	type SubscriptionProviderConfig,
 } from "./subscription-probe.ts";
-import type { QuotaWindowKind, SubscriptionProviderConfig } from "./subscription-probe.ts";
 
 // ───────── Constants ─────────
 
@@ -48,7 +50,6 @@ const OPENCODE_GO_PROVIDER_CONFIG: SubscriptionProviderConfig = {
 };
 
 const GO_QUOTA_HEADER_PREFIXES = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes!;
-const GO_QUOTA_WINDOWS: QuotaWindowKind[] = ["rolling", "weekly", "monthly"];
 
 // ───────── Auth Helpers ─────────
 
@@ -95,15 +96,26 @@ export function parseOpenCodeGoDashboardUsage(html: string): Omit<OpenCodeGoQuot
 
 /** True when any quota window has usage data. */
 export function hasGoQuotaData(
-	usage: Pick<OpenCodeGoQuotaResult, "rolling" | "weekly" | "monthly"> | undefined,
+	usage: Pick<OpenCodeGoQuotaResult, QuotaWindowKind> | undefined,
 ): boolean {
-	return [usage?.rolling, usage?.weekly, usage?.monthly].some((window) => window?.usedPercent !== undefined);
+	return QUOTA_WINDOW_KINDS.some((window) => usage?.[window]?.usedPercent !== undefined);
+}
+
+/** True when every quota window has a displayable usage percentage. */
+export function hasCompleteGoQuotaData(
+	usage: Pick<OpenCodeGoQuotaResult, QuotaWindowKind> | undefined,
+): boolean {
+	return QUOTA_WINDOW_KINDS.every((window) => usage?.[window]?.usedPercent !== undefined);
+}
+
+export function getOpenCodeGoQuotaHeaderWindows(headers: Record<string, string>): QuotaWindowKind[] {
+	return QUOTA_WINDOW_KINDS.filter((window) =>
+		parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, window).hasHeaders,
+	);
 }
 
 export function hasOpenCodeGoQuotaHeaders(headers: Record<string, string>): boolean {
-	return GO_QUOTA_WINDOWS.some((window) =>
-		parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, window).hasHeaders,
-	);
+	return getOpenCodeGoQuotaHeaderWindows(headers).length > 0;
 }
 
 /** Keep an exhausted refresh limited when its quota survives a concurrent merge. */

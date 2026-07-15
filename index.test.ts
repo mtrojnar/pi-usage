@@ -78,6 +78,8 @@ import {
 	parseCopilotUsageHeaders,
 } from "./src/copilot.ts";
 import {
+	getOpenCodeGoQuotaHeaderWindows,
+	hasCompleteGoQuotaData,
 	hasOpenCodeGoQuotaHeaders,
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
@@ -1161,16 +1163,29 @@ describe("reconcileOpenCodeGoRefresh", () => {
 });
 
 describe("parseOpenCodeGoUsageHeaders", () => {
-	it("detects quota freshness from the current headers only", () => {
-		assert.equal(hasOpenCodeGoQuotaHeaders({
+	it("identifies quota windows present in the current headers", () => {
+		assert.deepEqual(getOpenCodeGoQuotaHeaderWindows({
 			"x-opencode-go-rolling-used-percent": "25",
-		}), true);
+			"x-opencode-quota-monthly-reset-at": "2000000000",
+		}), ["rolling", "monthly"]);
 		assert.equal(hasOpenCodeGoQuotaHeaders({
 			"x-opencode-quota-weekly-reset-at": "2000000000",
 		}), true);
 		assert.equal(hasOpenCodeGoQuotaHeaders({
 			"x-opencode-go-status": "available",
 		}), false);
+	});
+
+	it("requires usage data for every window before treating quota as complete", () => {
+		assert.equal(hasCompleteGoQuotaData(makeGoUsage({
+			rolling: { usedPercent: 25 },
+			weekly: { usedPercent: 50 },
+		})), false);
+		assert.equal(hasCompleteGoQuotaData(makeGoUsage({
+			rolling: { usedPercent: 25 },
+			weekly: { usedPercent: 50 },
+			monthly: { usedPercent: 0 },
+		})), true);
 	});
 
 	it("parses passive Go quota headers", () => {
