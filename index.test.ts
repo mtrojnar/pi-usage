@@ -61,6 +61,7 @@ import {
 	renderGoWindows,
 	renderSubscriptionWindows,
 	resetDuration,
+	updateFooterStatus,
 	usageHasData,
 } from "./src/render.ts";
 import {
@@ -1406,6 +1407,45 @@ describe("renderCodexWindows", () => {
 			false,
 		);
 		assert.match(result.join("\n"), /rate_limited/);
+	});
+
+	it("renders a retry countdown when rate limited without quota percentages", () => {
+		const result = renderCodexWindows(
+			makeCodexUsage({
+				activeLimit: "rate_limited",
+				primaryUsedPercent: undefined,
+				secondaryUsedPercent: undefined,
+				primaryResetAfterSeconds: 30,
+			}),
+			identity,
+			false,
+		).join("\n");
+		assert.match(result, /retry: 30s/);
+	});
+});
+
+// ───────── updateFooterStatus ─────────
+
+describe("updateFooterStatus", () => {
+	it("renders a Codex retry countdown without quota percentages", () => {
+		let status: string | undefined;
+		const ctx = {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_color: string, text: string) => text },
+				setStatus: (_id: string, value: string | undefined) => { status = value; },
+			},
+		} as any;
+		const codex = makeCodexUsage({
+			activeLimit: "rate_limited",
+			primaryUsedPercent: undefined,
+			secondaryUsedPercent: undefined,
+			primaryResetAfterSeconds: 30,
+		});
+
+		updateFooterStatus(ctx, { codex, subscriptions: [] });
+
+		assert.match(status ?? "", /⏳\/30s/);
 	});
 });
 

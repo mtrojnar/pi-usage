@@ -149,17 +149,22 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 		? ` [${codex.activeLimit}]`
 		: "";
 	const primaryLabel = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
+	const windows: UsageWindowLine[] = [
+		{ label: primaryLabel, usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
+		{ label: "week", usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
+		{ label: "review", usedPercent: codex.codeReviewUsedPercent, resetAt: codex.codeReviewResetAt, resetAfterSeconds: codex.codeReviewResetAfterSeconds },
+	];
 
 	const lines = [
 		fmt("dim", DIVIDER),
 		`${fmt("accent", "Codex")}${fmt("dim", planLabel + limitLabel)}`,
-		...windowLines([
-			{ label: primaryLabel, usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
-			{ label: "week", usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
-			{ label: "review", usedPercent: codex.codeReviewUsedPercent, resetAt: codex.codeReviewResetAt, resetAfterSeconds: codex.codeReviewResetAfterSeconds },
-		], 6, fmt, useColor),
+		...windowLines(windows, 6, fmt, useColor),
 	];
 
+	const retryDuration = resetDuration(codex.primaryResetAt, codex.primaryResetAfterSeconds);
+	if (codex.activeLimit === "rate_limited" && !windows.some((window) => window.usedPercent !== undefined) && retryDuration) {
+		lines.push(`  ${fmt("warning", `retry: ${retryDuration}`)}`);
+	}
 	if (codex.creditsHasCredits && codex.creditsBalance) {
 		lines.push(`  ${fmt("dim", `credits: ${codex.creditsBalance}`)}`);
 	}
@@ -365,7 +370,9 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 			{ usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
 			{ usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
 		]).join(dim(","));
-		const summary = quotaSummary || theme.fg(limited ? "warning" : "dim", limited ? "⏳" : "✓");
+		const retryDuration = resetDuration(codex.primaryResetAt, codex.primaryResetAfterSeconds);
+		const fallback = limited && retryDuration ? `⏳/${retryDuration}` : limited ? "⏳" : "✓";
+		const summary = quotaSummary || theme.fg(limited ? "warning" : "dim", fallback);
 		addPart("Codex", limited, summary);
 	}
 	if (usageHasData(anthropic)) {
