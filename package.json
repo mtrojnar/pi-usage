@@ -1,5 +1,5 @@
 {
-  "name": "pi-usage",
+  "name": "@mtrojnar/pi-usage",
   "version": "0.1.0",
   "description": "Usage limit checker for pi coding agent — shows Codex, Anthropic, Copilot, OpenCode, and compatible subscription limits at startup",
   "license": "MIT",
@@ -15,9 +15,12 @@
     }
   ],
   "type": "module",
-  "main": "index.ts",
+  "main": "./index.ts",
   "exports": {
     ".": "./index.ts"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "index.ts",
@@ -62,13 +65,21 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "npx tsx --test index.test.ts"
+    "test": "tsx --test index.test.ts",
+    "prepublishOnly": "npm run check && npm test",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": ">=0.80.2 <1",
     "@earendil-works/pi-coding-agent": ">=0.80.2 <1",
     "@earendil-works/pi-tui": ">=0.80.2 <1",
     "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
     "typescript": "^5.7.3"
   }
 }

@@ -68,7 +68,21 @@ By default, results are displayed as a startup **Usage Limits** report with a he
 
 ## Installation
 
-### Via pi install (recommended)
+### Via pi install from npm (recommended)
+
+```bash
+pi install npm:@mtrojnar/pi-usage
+```
+
+Or add to your `settings.json`:
+
+```json
+{
+  "packages": ["npm:@mtrojnar/pi-usage"]
+}
+```
+
+### Via pi install from GitHub
 
 ```bash
 pi install git:github.com/mtrojnar/pi-usage
@@ -84,14 +98,6 @@ git clone https://github.com/mtrojnar/pi-usage ~/.pi/agent/extensions/pi-usage
 
 # Then install dependencies
 cd ~/.pi/agent/extensions/pi-usage && npm install
-```
-
-Or add to your `settings.json`:
-
-```json
-{
-  "packages": ["git:github.com/mtrojnar/pi-usage"]
-}
 ```
 
 ## Setup
