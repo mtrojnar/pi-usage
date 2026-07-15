@@ -13,7 +13,7 @@ export function mergeConcurrentFields<T extends object>(
 
 	const merged = { ...current };
 	for (const field of fields) {
-		if (result[field] !== undefined && Object.is(current[field], before?.[field])) {
+		if (Object.is(current[field], before?.[field])) {
 			merged[field] = result[field];
 		}
 	}

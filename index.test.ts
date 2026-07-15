@@ -174,6 +174,14 @@ describe("mergeConcurrentFields", () => {
 			quota: 20,
 		});
 	});
+
+	it("clears an unchanged field omitted by the refreshed result", () => {
+		const before: Usage = { status: "available", error: "stale quota error" };
+		const current: Usage = { status: "rate_limited", error: "stale quota error" };
+		const result: Usage = { status: "available" };
+
+		assert.equal(mergeConcurrentFields(result, before, current, ["error"]).error, undefined);
+	});
 });
 
 // ───────── parseEnvInt ─────────
