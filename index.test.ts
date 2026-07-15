@@ -1469,6 +1469,21 @@ describe("renderCodexWindows", () => {
 		).join("\n");
 		assert.match(result, /retry: 30s/);
 	});
+
+	it("renders a primary retry countdown alongside a cached secondary quota", () => {
+		const result = renderCodexWindows(
+			makeCodexUsage({
+				activeLimit: "rate_limited",
+				primaryUsedPercent: undefined,
+				secondaryUsedPercent: 55,
+				primaryResetAfterSeconds: 30,
+			}),
+			identity,
+			false,
+		).join("\n");
+		assert.match(result, /week.*55%/);
+		assert.match(result, /retry: 30s/);
+	});
 });
 
 // ───────── updateFooterStatus ─────────
@@ -1494,6 +1509,28 @@ describe("updateFooterStatus", () => {
 		updateFooterStatus(ctx, { codex, subscriptions: [] });
 
 		assert.match(status ?? "", /⏳\/30s/);
+	});
+
+	it("keeps the Codex retry countdown with a cached secondary quota", () => {
+		let status: string | undefined;
+		const ctx = {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_color: string, text: string) => text },
+				setStatus: (_id: string, value: string | undefined) => { status = value; },
+			},
+		} as any;
+		const codex = makeCodexUsage({
+			activeLimit: "rate_limited",
+			primaryUsedPercent: undefined,
+			secondaryUsedPercent: 55,
+			primaryResetAfterSeconds: 30,
+			error: "Rate limited (429)",
+		});
+
+		updateFooterStatus(ctx, { codex, subscriptions: [] });
+
+		assert.match(status ?? "", /⏳\/30s,55%/);
 	});
 });
 

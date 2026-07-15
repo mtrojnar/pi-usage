@@ -162,7 +162,7 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 	];
 
 	const retryDuration = resetDuration(codex.primaryResetAt, codex.primaryResetAfterSeconds);
-	if (codex.activeLimit === "rate_limited" && !windows.some((window) => window.usedPercent !== undefined) && retryDuration) {
+	if (codex.activeLimit === "rate_limited" && codex.primaryUsedPercent === undefined && retryDuration) {
 		lines.push(`  ${fmt("warning", `retry: ${retryDuration}`)}`);
 	}
 	if (codex.creditsHasCredits && codex.creditsBalance) {
@@ -366,13 +366,18 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 
 	if (codexUsageHasData(codex)) {
 		const limited = codex.activeLimit === "rate_limited";
-		const quotaSummary = footerQuotaParts(theme, [
+		const quotaParts = footerQuotaParts(theme, [
 			{ usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
 			{ usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
-		]).join(dim(","));
+		]);
 		const retryDuration = resetDuration(codex.primaryResetAt, codex.primaryResetAfterSeconds);
-		const fallback = limited && retryDuration ? `⏳/${retryDuration}` : limited ? "⏳" : "✓";
-		const summary = quotaSummary || theme.fg(limited ? "warning" : "dim", fallback);
+		if (limited && codex.primaryUsedPercent === undefined && retryDuration) {
+			quotaParts.unshift(theme.fg("warning", `⏳/${retryDuration}`));
+		}
+		const fallback = limited ? "⏳" : "✓";
+		const summary = quotaParts.length > 0
+			? quotaParts.join(dim(","))
+			: theme.fg(limited ? "warning" : "dim", fallback);
 		addPart("Codex", limited, summary);
 	}
 	if (usageHasData(anthropic)) {
