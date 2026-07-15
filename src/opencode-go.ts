@@ -106,6 +106,19 @@ export function hasOpenCodeGoQuotaHeaders(headers: Record<string, string>): bool
 	);
 }
 
+/** Keep an authoritative exhausted dashboard result after merging a newer passive status. */
+export function reconcileOpenCodeGoRefresh(
+	result: OpenCodeGoUsage,
+	merged: OpenCodeGoUsage,
+): OpenCodeGoUsage {
+	const quotaExhausted = result.status === "rate_limited"
+		&& [result.rolling, result.weekly, result.monthly]
+			.some((window) => window?.usedPercent !== undefined && window.usedPercent >= 100);
+	return merged.status === "available" && quotaExhausted
+		? { ...merged, available: false, status: "rate_limited" }
+		: merged;
+}
+
 export function parseOpenCodeGoUsageHeaders(
 	headers: Record<string, string>,
 	status: number,

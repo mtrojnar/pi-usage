@@ -82,6 +82,7 @@ import {
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
 	parseOpenCodeGoUsageWindow,
+	reconcileOpenCodeGoRefresh,
 } from "./src/opencode-go.ts";
 import { resolveProbeEndpoint } from "./src/probe.ts";
 import {
@@ -1103,6 +1104,35 @@ describe("generic subscription helpers", () => {
 		assert.equal(isSubscriptionQuotaMessage("subscription quota exceeded"), true);
 		assert.equal(isSubscriptionQuotaMessage("too many requests"), true);
 		assert.equal(isSubscriptionQuotaMessage("model not found"), false);
+	});
+});
+
+describe("reconcileOpenCodeGoRefresh", () => {
+	it("keeps an exhausted dashboard result limited after a passive success", () => {
+		const result = makeGoUsage({
+			available: false,
+			status: "rate_limited",
+			rolling: { usedPercent: 100 },
+		});
+		const merged = makeGoUsage({
+			available: true,
+			status: "available",
+			rolling: { usedPercent: 100 },
+			source: "headers",
+		});
+
+		assert.deepEqual(reconcileOpenCodeGoRefresh(result, merged), {
+			...merged,
+			available: false,
+			status: "rate_limited",
+		});
+	});
+
+	it("does not overwrite a newer passive limit with an available dashboard", () => {
+		const result = makeGoUsage({ rolling: { usedPercent: 20 } });
+		const merged = makeGoUsage({ available: false, status: "rate_limited" });
+
+		assert.equal(reconcileOpenCodeGoRefresh(result, merged), merged);
 	});
 });
 

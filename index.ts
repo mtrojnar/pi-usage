@@ -41,7 +41,7 @@ import { mergeConcurrentFields } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
-import { getOpenCodeApiKey, checkOpenCodeGoUsage, hasGoQuotaData, hasOpenCodeGoQuotaHeaders, parseOpenCodeGoUsageHeaders } from "./src/opencode-go.ts";
+import { getOpenCodeApiKey, checkOpenCodeGoUsage, hasGoQuotaData, hasOpenCodeGoQuotaHeaders, parseOpenCodeGoUsageHeaders, reconcileOpenCodeGoRefresh } from "./src/opencode-go.ts";
 import { checkSubscriptionProviderUsage, getSubscriptionApiKey, parseSubscriptionUsageHeaders } from "./src/subscription-probe.ts";
 import { getSubscriptionProviderConfig, SUBSCRIPTION_PROVIDERS } from "./src/subscriptions.ts";
 import {
@@ -327,12 +327,13 @@ export default function (pi: ExtensionAPI) {
 				refreshFields: readonly (keyof T)[],
 				apply: (result: T) => void,
 				resultIsAuthoritative: (result: T) => boolean,
+				reconcileResult?: (result: T, merged: T) => T,
 			): void => {
 				const passiveRevision = passiveHeaderRevision(provider);
 				const before = current();
 				checks.push(check.then((result) => {
 					if (signal.aborted || generation !== sessionGeneration) return;
-					apply(passiveHeaderRevision(provider) === passiveRevision
+					const merged = passiveHeaderRevision(provider) === passiveRevision
 						? result
 						: mergeConcurrentFields(
 							result,
@@ -340,7 +341,8 @@ export default function (pi: ExtensionAPI) {
 							current(),
 							refreshFields,
 							resultIsAuthoritative(result),
-						));
+						);
+					apply(reconcileResult ? reconcileResult(result, merged) : merged);
 				}));
 			};
 
@@ -412,6 +414,7 @@ export default function (pi: ExtensionAPI) {
 					GO_REFRESH_FIELDS,
 					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
 					probeRefreshIsAuthoritative,
+					reconcileOpenCodeGoRefresh,
 				);
 			} else if (!skipGoCheck) {
 				goUsage = undefined;
