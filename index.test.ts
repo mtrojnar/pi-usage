@@ -1392,6 +1392,18 @@ describe("renderAnthropicWindows", () => {
 		assert.match(result, /claude-sonnet-4-5/);
 	});
 
+	it("counts retry delays down from their absolute reset time", () => {
+		const anthropic: AnthropicUsage = {
+			available: false,
+			status: "rate_limited",
+			retryAfterSeconds: 30,
+			retryResetAt: Math.floor(Date.now() / 1000) - 1,
+		};
+		const result = renderAnthropicWindows(anthropic, identity, false).join("\n");
+		assert.match(result, /retry: now/);
+		assert.doesNotMatch(result, /retry: 30s/);
+	});
+
 	it("renders with color when useColor=true", () => {
 		const anthropic: AnthropicUsage = {
 			available: true,

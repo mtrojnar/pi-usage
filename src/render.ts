@@ -113,6 +113,7 @@ interface ProbeDetails {
 	totalModels?: number;
 	availableModels?: number;
 	retryAfterSeconds?: number;
+	retryResetAt?: number;
 	errorMessage?: string;
 	error?: string;
 }
@@ -121,8 +122,9 @@ interface ProbeDetails {
 function detailLines(usage: ProbeDetails, modelNoun: string, hasWindowData: boolean, fmt: Fmt): string[] {
 	const lines: string[] = [];
 	const limited = usage.status === "rate_limited" || usage.status === "credits_error";
-	if (limited && usage.retryAfterSeconds && !hasWindowData) {
-		lines.push(`  ${fmt("warning", `retry: ${formatDuration(usage.retryAfterSeconds)}`)}`);
+	const retryDuration = resetDuration(usage.retryResetAt, usage.retryAfterSeconds);
+	if (limited && retryDuration && !hasWindowData) {
+		lines.push(`  ${fmt("warning", `retry: ${retryDuration}`)}`);
 	}
 	if (usage.workingModel) lines.push(`  ${fmt("dim", `working: ${usage.workingModel}`)}`);
 	if (usage.checkedModels && usage.totalModels) {
@@ -330,11 +332,18 @@ function footerQuotaParts(theme: Theme, windows: FooterWindow[]): string[] {
 }
 
 /** Join window summaries; fall back to a retry hint or a bare status icon. */
-function footerSummary(theme: Theme, windows: FooterWindow[], status: GoModelStatus, retryAfterSeconds?: number): string {
+function footerSummary(
+	theme: Theme,
+	windows: FooterWindow[],
+	status: GoModelStatus,
+	retryAfterSeconds?: number,
+	retryResetAt?: number,
+): string {
 	const parts = footerQuotaParts(theme, windows);
 	if (parts.length > 0) return parts.join(theme.fg("dim", ","));
-	if ((status === "rate_limited" || status === "credits_error") && retryAfterSeconds) {
-		return theme.fg("warning", `limited/${formatDuration(retryAfterSeconds)}`);
+	const retryDuration = resetDuration(retryResetAt, retryAfterSeconds);
+	if ((status === "rate_limited" || status === "credits_error") && retryDuration) {
+		return theme.fg("warning", `limited/${retryDuration}`);
 	}
 	return theme.fg("dim", statusIcon(status));
 }
@@ -361,13 +370,13 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 		addPart("Claude", anthropic.status === "rate_limited", footerSummary(theme, [
 			{ usedPercent: anthropic.fiveHour?.utilizationPercent, resetAt: anthropic.fiveHour?.resetAt, resetAfterSeconds: anthropic.fiveHour?.resetAfterSeconds },
 			{ usedPercent: anthropic.weekly?.utilizationPercent, resetAt: anthropic.weekly?.resetAt, resetAfterSeconds: anthropic.weekly?.resetAfterSeconds },
-		], anthropic.status, anthropic.retryAfterSeconds));
+		], anthropic.status, anthropic.retryAfterSeconds, anthropic.retryResetAt));
 	}
 	if (usageHasData(copilot)) {
 		addPart("Copilot", copilot.status === "rate_limited" || copilot.status === "credits_error", footerSummary(theme, [
 			{ ...copilot.premiumRequests, suffix: "p" },
 			{ ...copilot.requests, suffix: "r" },
-		], copilot.status, copilot.retryAfterSeconds));
+		], copilot.status, copilot.retryAfterSeconds, copilot.retryResetAt));
 	}
 	for (const subscription of [go, ...subscriptions]) {
 		if (!usageHasData(subscription)) continue;
@@ -378,7 +387,7 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 				{ ...subscription.rolling, suffix: "r" },
 				{ ...subscription.weekly, suffix: "w" },
 				{ ...subscription.monthly, suffix: "m" },
-			], subscription.status, subscription.retryAfterSeconds),
+			], subscription.status, subscription.retryAfterSeconds, subscription.retryResetAt),
 		);
 	}
 
