@@ -1128,18 +1128,13 @@ describe("generic subscription helpers", () => {
 });
 
 describe("reconcileOpenCodeGoRefresh", () => {
-	it("keeps an exhausted dashboard result limited after a passive success", () => {
+	it("keeps exhausted merged quota limited after a passive success", () => {
 		const result = makeGoUsage({
 			available: false,
 			status: "rate_limited",
 			rolling: { usedPercent: 100 },
 		});
-		const merged = makeGoUsage({
-			available: true,
-			status: "available",
-			rolling: { usedPercent: 100 },
-			source: "headers",
-		});
+		const merged = makeGoUsage({ rolling: { usedPercent: 100 }, source: "headers" });
 
 		assert.deepEqual(reconcileOpenCodeGoRefresh(result, merged), {
 			...merged,
@@ -1148,10 +1143,19 @@ describe("reconcileOpenCodeGoRefresh", () => {
 		});
 	});
 
-	it("does not overwrite a newer passive limit with an available dashboard", () => {
+	it("preserves a newer passive limit", () => {
 		const result = makeGoUsage({ rolling: { usedPercent: 20 } });
 		const merged = makeGoUsage({ available: false, status: "rate_limited" });
+		assert.equal(reconcileOpenCodeGoRefresh(result, merged), merged);
+	});
 
+	it("does not apply stale exhaustion to newer non-exhausted quota", () => {
+		const result = makeGoUsage({
+			available: false,
+			status: "rate_limited",
+			rolling: { usedPercent: 100 },
+		});
+		const merged = makeGoUsage({ rolling: { usedPercent: 20 }, source: "headers" });
 		assert.equal(reconcileOpenCodeGoRefresh(result, merged), merged);
 	});
 });
