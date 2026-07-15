@@ -409,8 +409,10 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 
 // ───────── Data Presence Guards ─────────
 
-export function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage & { error: undefined } {
-	return codex !== undefined && codex.error === undefined && codex.activeLimit !== "error";
+export function codexUsageHasData(codex: CodexUsage | undefined): codex is CodexUsage {
+	return codex !== undefined
+		&& codex.activeLimit !== "error"
+		&& (codex.error === undefined || codex.activeLimit === "rate_limited");
 }
 
 /** True when a probe-based provider is configured (anything but no_key). */

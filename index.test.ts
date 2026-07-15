@@ -1226,6 +1226,13 @@ describe("codexUsageHasData", () => {
 		assert.equal(codexUsageHasData(makeCodexUsage({ error: "some error" })), false);
 	});
 
+	it("returns true for a rate limit with an error detail", () => {
+		assert.equal(codexUsageHasData(makeCodexUsage({
+			activeLimit: "rate_limited",
+			error: "Rate limited (429)",
+		})), true);
+	});
+
 	it("returns false when activeLimit is error", () => {
 		assert.equal(codexUsageHasData(makeCodexUsage({ activeLimit: "error" })), false);
 	});
@@ -1441,6 +1448,7 @@ describe("updateFooterStatus", () => {
 			primaryUsedPercent: undefined,
 			secondaryUsedPercent: undefined,
 			primaryResetAfterSeconds: 30,
+			error: "Rate limited (429)",
 		});
 
 		updateFooterStatus(ctx, { codex, subscriptions: [] });
