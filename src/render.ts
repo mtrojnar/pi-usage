@@ -360,11 +360,13 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 	};
 
 	if (codexUsageHasData(codex)) {
-		const summary = footerQuotaParts(theme, [
+		const limited = codex.activeLimit === "rate_limited";
+		const quotaSummary = footerQuotaParts(theme, [
 			{ usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
 			{ usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
 		]).join(dim(","));
-		addPart("Codex", codex.activeLimit === "rate_limited", summary);
+		const summary = quotaSummary || theme.fg(limited ? "warning" : "dim", limited ? "⏳" : "✓");
+		addPart("Codex", limited, summary);
 	}
 	if (usageHasData(anthropic)) {
 		addPart("Claude", anthropic.status === "rate_limited", footerSummary(theme, [

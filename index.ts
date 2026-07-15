@@ -420,7 +420,7 @@ export default function (pi: ExtensionAPI) {
 		const modelId = ctx.model?.id;
 
 		if (provider === OPENAI_CODEX_PROVIDER || hasHeaderPrefix(event.headers, "x-codex-")) {
-			const parsed = parseCodexUsageHeaders(event.headers, event.status);
+			const parsed = parseCodexUsageHeaders(event.headers, event.status, codexUsage);
 			if (parsed) {
 				codexUsage = normalizeCodexResetTimes(parsed);
 				markPassiveUpdate(OPENAI_CODEX_PROVIDER);

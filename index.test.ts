@@ -702,12 +702,28 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.source, "headers");
 	});
 
-	it("parses Codex 429 retry-after without x-codex headers", () => {
+	it("parses Codex 429 retry-after without fabricating quota percentages", () => {
 		const usage = parseCodexUsageHeaders({ "retry-after": "30" }, 429);
 		assert.ok(usage);
 		assert.equal(usage.activeLimit, "rate_limited");
-		assert.equal(usage.primaryUsedPercent, 100);
+		assert.equal(usage.primaryUsedPercent, undefined);
+		assert.equal(usage.secondaryUsedPercent, undefined);
 		assert.equal(usage.primaryResetAfterSeconds, 30);
+	});
+
+	it("preserves cached Codex fields when passive headers are partial", () => {
+		const previous = makeCodexUsage({
+			planType: "plus",
+			primaryUsedPercent: 42,
+			secondaryUsedPercent: 55,
+			primaryResetAt: 2_000_000_000,
+		});
+		const usage = parseCodexUsageHeaders({ "x-codex-active-limit": "normal" }, 200, previous);
+		assert.ok(usage);
+		assert.equal(usage.planType, "plus");
+		assert.equal(usage.primaryUsedPercent, 42);
+		assert.equal(usage.secondaryUsedPercent, 55);
+		assert.equal(usage.primaryResetAt, 2_000_000_000);
 	});
 
 	it("returns undefined when no relevant headers", () => {

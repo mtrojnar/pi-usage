@@ -5,8 +5,8 @@ import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 export interface CodexUsage {
 	planType: string;
 	activeLimit: string;
-	primaryUsedPercent: number;      // 5hr window
-	secondaryUsedPercent: number;    // weekly window
+	primaryUsedPercent?: number;     // 5hr window
+	secondaryUsedPercent?: number;   // weekly window
 	codeReviewUsedPercent?: number;
 	primaryWindowMinutes: number;
 	secondaryWindowMinutes: number;

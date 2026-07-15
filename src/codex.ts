@@ -122,8 +122,8 @@ export async function checkCodexUsageFromUsageApi(token: string, accountId: stri
 const CODEX_USAGE_DEFAULTS: CodexUsage = {
 	planType: "unknown",
 	activeLimit: "unknown",
-	primaryUsedPercent: 0,
-	secondaryUsedPercent: 0,
+	primaryUsedPercent: undefined,
+	secondaryUsedPercent: undefined,
 	primaryWindowMinutes: 300,
 	secondaryWindowMinutes: 10080,
 	primaryResetAfterSeconds: 0,
@@ -139,44 +139,58 @@ const CODEX_USAGE_DEFAULTS: CodexUsage = {
 
 const PROBE_ERROR_BASE: CodexUsage = { ...CODEX_USAGE_DEFAULTS, activeLimit: "error" };
 
-export function parseCodexUsageHeaders(headers: Record<string, string>, status: number = 200): CodexUsage | undefined {
+export function parseCodexUsageHeaders(
+	headers: Record<string, string>,
+	status: number = 200,
+	previous?: CodexUsage,
+): CodexUsage | undefined {
 	const getHeader = (name: string): string | undefined => headerValue(headers, name);
 	if (!hasHeaderPrefix(headers, "x-codex-") && status !== 429) return undefined;
 
-	const retryAfterSeconds = parseRetryAfterSeconds(getHeader("retry-after"));
-	const codeReviewUsedHeader = getHeader("x-codex-code-review-used-percent");
-	const codeReviewResetAfterHeader = getHeader("x-codex-code-review-reset-after-seconds");
-	const codeReviewResetAtHeader = getHeader("x-codex-code-review-reset-at");
-
-	return {
-		planType: getHeader("x-codex-plan-type") ?? "unknown",
-		activeLimit: getHeader("x-codex-active-limit") ?? (status === 429 ? "rate_limited" : "unknown"),
-		primaryUsedPercent: parseHeaderNumber(getHeader("x-codex-primary-used-percent"), status === 429 ? 100 : 0),
-		secondaryUsedPercent: parseHeaderNumber(getHeader("x-codex-secondary-used-percent"), status === 429 ? 100 : 0),
-		codeReviewUsedPercent: codeReviewUsedHeader !== undefined
-			? parseHeaderNumber(codeReviewUsedHeader, 0)
-			: undefined,
-		primaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-primary-window-minutes"), 300),
-		secondaryWindowMinutes: parseHeaderNumber(getHeader("x-codex-secondary-window-minutes"), 10080),
-		codeReviewWindowMinutes: codeReviewUsedHeader !== undefined
-			? parseHeaderNumber(getHeader("x-codex-code-review-window-minutes"), 0)
-			: undefined,
-		primaryResetAfterSeconds: parseHeaderNumber(getHeader("x-codex-primary-reset-after-seconds"), retryAfterSeconds),
-		secondaryResetAfterSeconds: parseHeaderNumber(getHeader("x-codex-secondary-reset-after-seconds"), 0),
-		codeReviewResetAfterSeconds: codeReviewResetAfterHeader !== undefined
-			? parseHeaderNumber(codeReviewResetAfterHeader, 0)
-			: undefined,
-		primaryResetAt: parseHeaderNumber(getHeader("x-codex-primary-reset-at"), 0),
-		secondaryResetAt: parseHeaderNumber(getHeader("x-codex-secondary-reset-at"), 0),
-		codeReviewResetAt: codeReviewResetAtHeader !== undefined
-			? parseHeaderNumber(codeReviewResetAtHeader, 0)
-			: undefined,
-		primaryOverSecondaryLimitPercent: parseHeaderNumber(getHeader("x-codex-primary-over-secondary-limit-percent"), 0),
-		creditsHasCredits: parseHeaderBool(getHeader("x-codex-credits-has-credits")),
-		creditsBalance: getHeader("x-codex-credits-balance") ?? "",
-		creditsUnlimited: parseHeaderBool(getHeader("x-codex-credits-unlimited")),
+	const usage: CodexUsage = {
+		...(previous ?? CODEX_USAGE_DEFAULTS),
+		activeLimit: getHeader("x-codex-active-limit")
+			?? (status === 429 ? "rate_limited" : previous?.activeLimit ?? "unknown"),
 		source: "headers",
 	};
+	delete usage.error;
+
+	const setNumber = (name: string, apply: (value: number) => void): void => {
+		const value = getHeader(name);
+		if (value !== undefined) apply(parseHeaderNumber(value, 0));
+	};
+	const setString = (name: string, apply: (value: string) => void): void => {
+		const value = getHeader(name);
+		if (value !== undefined) apply(value);
+	};
+	const setBool = (name: string, apply: (value: boolean) => void): void => {
+		const value = getHeader(name);
+		if (value !== undefined) apply(parseHeaderBool(value));
+	};
+
+	setString("x-codex-plan-type", (value) => { usage.planType = value; });
+	setNumber("x-codex-primary-used-percent", (value) => { usage.primaryUsedPercent = value; });
+	setNumber("x-codex-secondary-used-percent", (value) => { usage.secondaryUsedPercent = value; });
+	setNumber("x-codex-code-review-used-percent", (value) => { usage.codeReviewUsedPercent = value; });
+	setNumber("x-codex-primary-window-minutes", (value) => { usage.primaryWindowMinutes = value; });
+	setNumber("x-codex-secondary-window-minutes", (value) => { usage.secondaryWindowMinutes = value; });
+	setNumber("x-codex-code-review-window-minutes", (value) => { usage.codeReviewWindowMinutes = value; });
+	setNumber("x-codex-primary-reset-after-seconds", (value) => { usage.primaryResetAfterSeconds = value; });
+	setNumber("x-codex-secondary-reset-after-seconds", (value) => { usage.secondaryResetAfterSeconds = value; });
+	setNumber("x-codex-code-review-reset-after-seconds", (value) => { usage.codeReviewResetAfterSeconds = value; });
+	setNumber("x-codex-primary-reset-at", (value) => { usage.primaryResetAt = value; });
+	setNumber("x-codex-secondary-reset-at", (value) => { usage.secondaryResetAt = value; });
+	setNumber("x-codex-code-review-reset-at", (value) => { usage.codeReviewResetAt = value; });
+	setNumber("x-codex-primary-over-secondary-limit-percent", (value) => { usage.primaryOverSecondaryLimitPercent = value; });
+	setBool("x-codex-credits-has-credits", (value) => { usage.creditsHasCredits = value; });
+	setString("x-codex-credits-balance", (value) => { usage.creditsBalance = value; });
+	setBool("x-codex-credits-unlimited", (value) => { usage.creditsUnlimited = value; });
+
+	const retryAfterSeconds = parseRetryAfterSeconds(getHeader("retry-after"));
+	if (getHeader("x-codex-primary-reset-after-seconds") === undefined && retryAfterSeconds > 0) {
+		usage.primaryResetAfterSeconds = retryAfterSeconds;
+	}
+	return usage;
 }
 
 // ───────── Probe Fallback ─────────
