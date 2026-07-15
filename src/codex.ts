@@ -175,9 +175,18 @@ export function parseCodexUsageHeaders(
 	setNumber("x-codex-primary-window-minutes", (value) => { usage.primaryWindowMinutes = value; });
 	setNumber("x-codex-secondary-window-minutes", (value) => { usage.secondaryWindowMinutes = value; });
 	setNumber("x-codex-code-review-window-minutes", (value) => { usage.codeReviewWindowMinutes = value; });
-	setNumber("x-codex-primary-reset-after-seconds", (value) => { usage.primaryResetAfterSeconds = value; });
-	setNumber("x-codex-secondary-reset-after-seconds", (value) => { usage.secondaryResetAfterSeconds = value; });
-	setNumber("x-codex-code-review-reset-after-seconds", (value) => { usage.codeReviewResetAfterSeconds = value; });
+	setNumber("x-codex-primary-reset-after-seconds", (value) => {
+		usage.primaryResetAfterSeconds = value;
+		if (getHeader("x-codex-primary-reset-at") === undefined) usage.primaryResetAt = 0;
+	});
+	setNumber("x-codex-secondary-reset-after-seconds", (value) => {
+		usage.secondaryResetAfterSeconds = value;
+		if (getHeader("x-codex-secondary-reset-at") === undefined) usage.secondaryResetAt = 0;
+	});
+	setNumber("x-codex-code-review-reset-after-seconds", (value) => {
+		usage.codeReviewResetAfterSeconds = value;
+		if (getHeader("x-codex-code-review-reset-at") === undefined) usage.codeReviewResetAt = 0;
+	});
 	setNumber("x-codex-primary-reset-at", (value) => { usage.primaryResetAt = value; });
 	setNumber("x-codex-secondary-reset-at", (value) => { usage.secondaryResetAt = value; });
 	setNumber("x-codex-code-review-reset-at", (value) => { usage.codeReviewResetAt = value; });
@@ -189,6 +198,7 @@ export function parseCodexUsageHeaders(
 	const retryAfterSeconds = parseRetryAfterSeconds(getHeader("retry-after"));
 	if (getHeader("x-codex-primary-reset-after-seconds") === undefined && retryAfterSeconds > 0) {
 		usage.primaryResetAfterSeconds = retryAfterSeconds;
+		if (getHeader("x-codex-primary-reset-at") === undefined) usage.primaryResetAt = 0;
 	}
 	return usage;
 }

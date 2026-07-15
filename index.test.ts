@@ -726,6 +726,34 @@ describe("parseCodexUsageHeaders", () => {
 		assert.equal(usage.primaryResetAt, 2_000_000_000);
 	});
 
+	it("discards stale absolute Codex resets when a fresh relative reset arrives", () => {
+		const previous = makeCodexUsage({
+			primaryResetAt: 2_000_000_000,
+			secondaryResetAt: 2_000_000_100,
+			codeReviewResetAt: 2_000_000_200,
+		});
+		const usage = parseCodexUsageHeaders({
+			"x-codex-primary-reset-after-seconds": "30",
+			"x-codex-secondary-reset-after-seconds": "60",
+			"x-codex-code-review-reset-after-seconds": "90",
+		}, 200, previous);
+		assert.ok(usage);
+		assert.equal(usage.primaryResetAt, 0);
+		assert.equal(usage.secondaryResetAt, 0);
+		assert.equal(usage.codeReviewResetAt, 0);
+	});
+
+	it("discards a stale primary reset when Retry-After arrives", () => {
+		const usage = parseCodexUsageHeaders(
+			{ "retry-after": "30" },
+			429,
+			makeCodexUsage({ primaryResetAt: 2_000_000_000 }),
+		);
+		assert.ok(usage);
+		assert.equal(usage.primaryResetAfterSeconds, 30);
+		assert.equal(usage.primaryResetAt, 0);
+	});
+
 	it("returns undefined when no relevant headers", () => {
 		assert.equal(parseCodexUsageHeaders({ server: "test" }, 200), undefined);
 	});
