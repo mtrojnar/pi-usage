@@ -152,6 +152,14 @@ const GO_REFRESH_FIELDS = [
 	...SUBSCRIPTION_REFRESH_FIELDS, "quotaError",
 ] as const satisfies readonly (keyof OpenCodeGoUsage)[];
 
+function codexRefreshIsAuthoritative(result: CodexUsage): boolean {
+	return result.activeLimit !== "error";
+}
+
+function probeRefreshIsAuthoritative(result: { status: string }): boolean {
+	return result.status !== "error";
+}
+
 // ───────── Extension ─────────
 
 export default function (pi: ExtensionAPI) {
@@ -318,6 +326,7 @@ export default function (pi: ExtensionAPI) {
 				current: () => T | undefined,
 				refreshFields: readonly (keyof T)[],
 				apply: (result: T) => void,
+				resultIsAuthoritative: (result: T) => boolean,
 			): void => {
 				const passiveRevision = passiveHeaderRevision(provider);
 				const before = current();
@@ -325,7 +334,13 @@ export default function (pi: ExtensionAPI) {
 					if (signal.aborted || generation !== sessionGeneration) return;
 					apply(passiveHeaderRevision(provider) === passiveRevision
 						? result
-						: mergeConcurrentFields(result, before, current(), refreshFields));
+						: mergeConcurrentFields(
+							result,
+							before,
+							current(),
+							refreshFields,
+							resultIsAuthoritative(result),
+						));
 				}));
 			};
 
@@ -346,6 +361,7 @@ export default function (pi: ExtensionAPI) {
 					() => codexUsage,
 					CODEX_REFRESH_FIELDS,
 					(result) => { codexUsage = normalizeCodexResetTimes(result); },
+					codexRefreshIsAuthoritative,
 				);
 			}
 
@@ -359,6 +375,7 @@ export default function (pi: ExtensionAPI) {
 					() => anthropicUsage,
 					ANTHROPIC_REFRESH_FIELDS,
 					(result) => { anthropicUsage = normalizeAnthropicResetTimes(result); },
+					probeRefreshIsAuthoritative,
 				);
 			} else if (!skipAnthropicCheck) {
 				anthropicUsage = undefined;
@@ -374,6 +391,7 @@ export default function (pi: ExtensionAPI) {
 					() => copilotUsage,
 					COPILOT_REFRESH_FIELDS,
 					(result) => { copilotUsage = normalizeCopilotResetTimes(result); },
+					probeRefreshIsAuthoritative,
 				);
 			} else if (!skipCopilotCheck) {
 				copilotUsage = undefined;
@@ -393,6 +411,7 @@ export default function (pi: ExtensionAPI) {
 					() => goUsage,
 					GO_REFRESH_FIELDS,
 					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
+					probeRefreshIsAuthoritative,
 				);
 			} else if (!skipGoCheck) {
 				goUsage = undefined;
@@ -418,6 +437,7 @@ export default function (pi: ExtensionAPI) {
 							subscriptionUsages.set(providerConfig.provider, normalizeSubscriptionResetTimes(result));
 						}
 					},
+					probeRefreshIsAuthoritative,
 				);
 			}
 

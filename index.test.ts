@@ -182,6 +182,14 @@ describe("mergeConcurrentFields", () => {
 
 		assert.equal(mergeConcurrentFields(result, before, current, ["error"]).error, undefined);
 	});
+
+	it("keeps the newer passive value when the refreshed result is not authoritative", () => {
+		const before: Usage = { status: "available", quota: 10 };
+		const current: Usage = { status: "rate_limited", quota: 10 };
+		const result: Usage = { status: "error", quota: 0, error: "check failed" };
+
+		assert.equal(mergeConcurrentFields(result, before, current, ["quota"], false), current);
+	});
 });
 
 // ───────── parseEnvInt ─────────
