@@ -100,6 +100,12 @@ export function hasGoQuotaData(
 	return [usage?.rolling, usage?.weekly, usage?.monthly].some((window) => window?.usedPercent !== undefined);
 }
 
+export function hasOpenCodeGoQuotaHeaders(headers: Record<string, string>): boolean {
+	return GO_QUOTA_WINDOWS.some((window) =>
+		parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, window).hasHeaders,
+	);
+}
+
 export function parseOpenCodeGoUsageHeaders(
 	headers: Record<string, string>,
 	status: number,
@@ -110,7 +116,7 @@ export function parseOpenCodeGoUsageHeaders(
 	if (!parsed) return undefined;
 
 	// Fresh quota headers supersede any stale dashboard error.
-	const hasQuotaHeaders = GO_QUOTA_WINDOWS.some((window) => parseQuotaWindow(headers, GO_QUOTA_HEADER_PREFIXES, window).hasHeaders);
+	const hasQuotaHeaders = hasOpenCodeGoQuotaHeaders(headers);
 	return { ...parsed, quotaError: hasQuotaHeaders ? undefined : previous?.quotaError };
 }
 

@@ -78,6 +78,7 @@ import {
 	parseCopilotUsageHeaders,
 } from "./src/copilot.ts";
 import {
+	hasOpenCodeGoQuotaHeaders,
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
 	parseOpenCodeGoUsageWindow,
@@ -1106,6 +1107,18 @@ describe("generic subscription helpers", () => {
 });
 
 describe("parseOpenCodeGoUsageHeaders", () => {
+	it("detects quota freshness from the current headers only", () => {
+		assert.equal(hasOpenCodeGoQuotaHeaders({
+			"x-opencode-go-rolling-used-percent": "25",
+		}), true);
+		assert.equal(hasOpenCodeGoQuotaHeaders({
+			"x-opencode-quota-weekly-reset-at": "2000000000",
+		}), true);
+		assert.equal(hasOpenCodeGoQuotaHeaders({
+			"x-opencode-go-status": "available",
+		}), false);
+	});
+
 	it("parses passive Go quota headers", () => {
 		const usage = parseOpenCodeGoUsageHeaders({
 			"x-opencode-go-status": "available",
