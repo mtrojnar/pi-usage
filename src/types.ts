@@ -6,8 +6,8 @@ export interface CodexUsage {
 	planType: string;
 	activeLimit: string;             // active limit tier (for example "premium")
 	rateLimited: boolean;
-	primaryUsedPercent?: number;     // 5hr window
-	secondaryUsedPercent?: number;   // weekly window
+	primaryUsedPercent?: number;     // API primary slot (usually 5hr, sometimes the only weekly window)
+	secondaryUsedPercent?: number;   // optional API secondary slot (usually weekly)
 	codeReviewUsedPercent?: number;
 	primaryWindowMinutes: number;
 	secondaryWindowMinutes: number;

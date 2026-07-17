@@ -95,7 +95,9 @@ export async function checkCodexUsageFromUsageApi(token: string, accountId: stri
 			activeLimit: "unknown",
 			rateLimited: Boolean(data.rate_limit?.limit_reached),
 			primaryUsedPercent: windowUsedPercent(primary),
-			secondaryUsedPercent: windowUsedPercent(secondary),
+			// Some plans temporarily expose only a weekly window and place it in
+			// primary_window. Do not turn an absent secondary_window into a fake 0% row.
+			secondaryUsedPercent: secondary ? windowUsedPercent(secondary) : undefined,
 			codeReviewUsedPercent: codeReview ? windowUsedPercent(codeReview) : undefined,
 			primaryWindowMinutes: windowMinutes(primary, 300),
 			secondaryWindowMinutes: windowMinutes(secondary, 10080),

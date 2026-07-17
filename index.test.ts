@@ -42,6 +42,7 @@ import {
 	widgetSettingFromConfig,
 } from "./src/config.ts";
 import {
+	checkCodexUsageFromUsageApi,
 	parseCodexUsageHeaders,
 	windowMinutes,
 	windowResetAfterSeconds,
@@ -58,6 +59,7 @@ import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
 	codexUsageHasData,
+	codexWindowLabel,
 	footerUsageColor,
 	renderAnthropicWindows,
 	renderCodexWindows,
@@ -879,6 +881,38 @@ describe("parseCodexUsageHeaders", () => {
 	});
 });
 
+describe("checkCodexUsageFromUsageApi", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => { globalThis.fetch = realFetch; });
+
+	it("keeps a weekly-only primary window without inventing a secondary window", async () => {
+		globalThis.fetch = (async () => new Response(JSON.stringify({
+			plan_type: "team",
+			rate_limit: {
+				limit_reached: false,
+				primary_window: {
+					used_percent: 12,
+					limit_window_seconds: 7 * 24 * 60 * 60,
+					reset_after_seconds: 6 * 24 * 60 * 60,
+				},
+				secondary_window: null,
+			},
+		}), { status: 200 })) as typeof fetch;
+
+		const result = await checkCodexUsageFromUsageApi("token", "account");
+		assert.ok(result.success);
+		if (!result.success) return;
+		assert.equal(result.usage.primaryUsedPercent, 12);
+		assert.equal(result.usage.primaryWindowMinutes, 7 * 24 * 60);
+		assert.equal(result.usage.secondaryUsedPercent, undefined);
+
+		const rendered = renderCodexWindows(result.usage, identity, false).join("\n");
+		assert.match(rendered, /week.*12%/);
+		assert.doesNotMatch(rendered, /168h/);
+		assert.doesNotMatch(rendered, /week.*0%/);
+	});
+});
+
 describe("parseAnthropicUsageHeaders", () => {
 	it("parses unified 5h/7d rate-limit headers", () => {
 		const usage = parseAnthropicUsageHeaders({
@@ -1515,6 +1549,19 @@ describe("cancelResponseBody", () => {
 });
 
 // ───────── renderCodexWindows ─────────
+
+describe("codexWindowLabel", () => {
+	it("uses semantic labels for standard Codex windows", () => {
+		assert.equal(codexWindowLabel(300, "5hr"), "5hr");
+		assert.equal(codexWindowLabel(10080, "5hr"), "week");
+	});
+
+	it("formats nonstandard windows and falls back for invalid durations", () => {
+		assert.equal(codexWindowLabel(1440, "5hr"), "1d");
+		assert.equal(codexWindowLabel(90, "5hr"), "1.5h");
+		assert.equal(codexWindowLabel(0, "week"), "week");
+	});
+});
 
 describe("renderCodexWindows", () => {
 	it("renders code review and credits when present", () => {

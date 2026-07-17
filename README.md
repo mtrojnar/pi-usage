@@ -32,9 +32,9 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 When pi starts up, **pi-usage** automatically:
 
 1. **Codex** — Calls the ChatGPT usage endpoint first, then falls back to a minimal Codex backend request only if that usage endpoint fails. It shows your:
-   - **5hr window** usage percentage (primary limit)
-   - **Weekly window** usage percentage (secondary limit)
-   - Reset times for both windows
+   - **5hr window** usage percentage, when the plan exposes it
+   - **Weekly window** usage percentage
+   - Reset times for the available windows
    - Plan type, active limit, and credits info
 
 2. **Anthropic Claude** — For Claude Pro/Max it calls Anthropic's free subscription usage endpoint (same OAuth token pi uses); no model request is made. It shows:
@@ -269,7 +269,7 @@ Claude footer chunks are the 5-hour then weekly window (no suffix, like Codex). 
 
 ### Codex Rate Limits
 
-pi-usage first calls `https://chatgpt.com/backend-api/wham/usage` with the same OAuth token that pi stores for Codex/OpenAI auth. This returns the plan type, 5-hour window, weekly window, reset times, and credits without making a model request.
+pi-usage first calls `https://chatgpt.com/backend-api/wham/usage` with the same OAuth token that pi stores for Codex/OpenAI auth. This returns the plan type, available usage windows, reset times, and credits without making a model request. Windows are labeled by their reported duration because some plans expose only a weekly window in the API's primary slot.
 
 If that endpoint fails, pi-usage falls back to the older Codex backend header probe. The fallback response returns rate limit information via HTTP response headers:
 

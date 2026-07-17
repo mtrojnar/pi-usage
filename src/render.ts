@@ -139,6 +139,16 @@ function detailLines(usage: ProbeDetails, modelNoun: string, hasWindowData: bool
 
 // ───────── Rendering: Codex Windows ─────────
 
+/** Label Codex windows by duration because weekly-only plans can put the week in the primary slot. */
+export function codexWindowLabel(windowMinutes: number, fallback: "5hr" | "week"): string {
+	if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) return fallback;
+	if (windowMinutes === 5 * 60) return "5hr";
+	if (windowMinutes === 7 * 24 * 60) return "week";
+	if (windowMinutes >= 24 * 60 && windowMinutes % (24 * 60) === 0) return `${windowMinutes / (24 * 60)}d`;
+	if (windowMinutes >= 60) return `${windowMinutes / 60}h`;
+	return `${windowMinutes}m`;
+}
+
 export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolean): string[] {
 	if (codex.error && !codex.rateLimited) {
 		return sectionLines(fmt, "✗ Codex", "error", `— ${truncate(codex.error, 120)}`);
@@ -149,10 +159,11 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 		? ` [${codex.activeLimit}]`
 		: "";
 	const rateLimitLabel = codex.rateLimited ? " [rate_limited]" : "";
-	const primaryLabel = codex.primaryWindowMinutes === 300 ? "5hr" : `${codex.primaryWindowMinutes / 60}h`;
+	const primaryLabel = codexWindowLabel(codex.primaryWindowMinutes, "5hr");
+	const secondaryLabel = codexWindowLabel(codex.secondaryWindowMinutes, "week");
 	const windows: UsageWindowLine[] = [
 		{ label: primaryLabel, usedPercent: codex.primaryUsedPercent, resetAt: codex.primaryResetAt, resetAfterSeconds: codex.primaryResetAfterSeconds },
-		{ label: "week", usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
+		{ label: secondaryLabel, usedPercent: codex.secondaryUsedPercent, resetAt: codex.secondaryResetAt, resetAfterSeconds: codex.secondaryResetAfterSeconds },
 		{ label: "review", usedPercent: codex.codeReviewUsedPercent, resetAt: codex.codeReviewResetAt, resetAfterSeconds: codex.codeReviewResetAfterSeconds },
 	];
 
@@ -170,7 +181,7 @@ export function renderCodexWindows(codex: CodexUsage, fmt: Fmt, useColor: boolea
 		lines.push(`  ${fmt("dim", `credits: ${codex.creditsBalance}`)}`);
 	}
 	if (codex.primaryOverSecondaryLimitPercent > 0) {
-		lines.push(`  ${fmt("warning", `⚠ 5hr exceeds weekly allocation: ${codex.primaryOverSecondaryLimitPercent}%`)}`);
+		lines.push(`  ${fmt("warning", `⚠ ${primaryLabel} exceeds ${secondaryLabel} allocation: ${codex.primaryOverSecondaryLimitPercent}%`)}`);
 	}
 
 	return lines;
