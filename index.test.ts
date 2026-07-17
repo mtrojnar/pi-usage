@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
 	clampPercent,
 	formatDuration,
@@ -51,6 +53,7 @@ import {
 	readResponseText,
 } from "./src/http.ts";
 import { mergeConcurrentFields } from "./src/concurrent.ts";
+import { readStoredCredential } from "./src/auth.ts";
 import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
@@ -141,6 +144,31 @@ function makeGoUsage(overrides: Partial<OpenCodeGoUsage> = {}): OpenCodeGoUsage 
 		...overrides,
 	};
 }
+
+// ───────── pi auth storage ─────────
+
+describe("readStoredCredential", () => {
+	it("reads an OAuth credential through pi's public one-off API", async () => {
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-usage-auth-"));
+		const credential = {
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			accountId: "account-id",
+		};
+		try {
+			process.env.PI_CODING_AGENT_DIR = tempDir;
+			fs.writeFileSync(path.join(tempDir, "auth.json"), JSON.stringify({ "openai-codex": credential }));
+			assert.deepEqual(await readStoredCredential("openai-codex"), credential);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+});
 
 // ───────── mergeConcurrentFields ─────────
 

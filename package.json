@@ -1,6 +1,6 @@
 {
   "name": "@mtrojnar/pi-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Usage limit checker for pi coding agent — shows Codex, Anthropic, Copilot, OpenCode, and compatible subscription limits at startup",
   "license": "MIT",
   "author": "timm-u and Michał Trojnara",
@@ -71,11 +71,11 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.80.8 <1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": ">=0.80.2 <1",
-    "@earendil-works/pi-coding-agent": ">=0.80.2 <1",
+    "@earendil-works/pi-coding-agent": ">=0.80.8 <1",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.5",
     "typescript": "^5.7.3"

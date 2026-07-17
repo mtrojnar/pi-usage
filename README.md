@@ -15,7 +15,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 ### Security Changes
 
 - Private OpenCode Go quota config enforcement on POSIX systems (`0600`) before reading browser auth cookies.
-- Codex OAuth lookup through pi `AuthStorage` with a time-bounded token refresh, so an expired token still shows usage without risking unbounded startup I/O.
+- Codex OAuth lookup through pi's credential APIs with a time-bounded token refresh, so an expired token still shows usage without risking unbounded startup I/O.
 - Bounded response-body reads to reduce hang and memory-exhaustion risk.
 
 ### Functional Changes

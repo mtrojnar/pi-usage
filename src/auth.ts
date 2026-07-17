@@ -35,8 +35,8 @@ export async function readStoredCredential(provider: string): Promise<StoredCred
 	try {
 		const authPath = authJsonPath();
 		if (!fs.existsSync(authPath)) return undefined;
-		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
-		return AuthStorage.create(authPath).get(provider) as StoredCredential | undefined;
+		const { readStoredCredential: readPiStoredCredential } = await import("@earendil-works/pi-coding-agent");
+		return readPiStoredCredential(provider, authPath) as StoredCredential | undefined;
 	} catch {
 		return undefined;
 	}
@@ -52,15 +52,22 @@ export async function refreshProviderToken(provider: string, timeoutMs: number):
 	try {
 		const authPath = authJsonPath();
 		if (!fs.existsSync(authPath)) return undefined;
-		const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
-		const storage = AuthStorage.create(authPath);
+		const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const bounded = new Promise<undefined>((resolve) => {
 			timer = setTimeout(() => resolve(undefined), timeoutMs);
 			unrefTimer(timer);
 		});
+		const refresh = (async () => {
+			const runtime = await ModelRuntime.create({
+				authPath,
+				modelsPath: null,
+				allowModelNetwork: false,
+			});
+			return (await runtime.getAuth(provider))?.auth.apiKey;
+		})();
 		try {
-			return (await Promise.race([storage.getApiKey(provider), bounded])) ?? undefined;
+			return (await Promise.race([refresh, bounded])) ?? undefined;
 		} finally {
 			if (timer) clearTimeout(timer);
 		}
