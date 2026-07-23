@@ -90,6 +90,7 @@ import {
 	reconcileOpenCodeGoRefresh,
 } from "./src/opencode-go.ts";
 import { resolveProbeEndpoint } from "./src/probe.ts";
+import { parseKimiUsagePayload } from "./src/kimi.ts";
 import {
 	getSubscriptionCheckModels,
 	isSubscriptionModelUnavailable,
@@ -2197,5 +2198,69 @@ describe("parseOpenCodeGoDashboardUsage", () => {
 		const result = parseOpenCodeGoDashboardUsage(html);
 		assert.ok(result.error!.includes("not recognized"));
 		assert.equal(result.rolling, undefined);
+	});
+});
+
+// ───────── parseKimiUsagePayload ─────────
+
+describe("parseKimiUsagePayload", () => {
+	const basePayload = {
+		usage: { limit: "100", used: "32", remaining: "68", resetTime: "2026-07-25T15:50:46.822466Z" },
+		limits: [
+			{
+				window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+				detail: { limit: "100", used: "8", remaining: "92", resetTime: "2026-07-23T20:50:46.822466Z" },
+			},
+		],
+	};
+
+	it("maps top-level usage to weekly and 300-minute window to rolling", () => {
+		const result = parseKimiUsagePayload(basePayload);
+		assert.ok(result);
+		assert.equal(result.weekly?.usedPercent, 32);
+		assert.equal(result.weekly?.remainingPercent, 68);
+		assert.equal(result.rolling?.usedPercent, 8);
+		assert.equal(result.rolling?.remainingPercent, 92);
+	});
+
+	it("parses ISO reset times into unix seconds", () => {
+		const result = parseKimiUsagePayload(basePayload);
+		assert.ok(result);
+		assert.equal(result.weekly?.resetAt, Math.round(Date.parse("2026-07-25T15:50:46.822466Z") / 1000));
+		assert.equal(result.rolling?.resetAt, Math.round(Date.parse("2026-07-23T20:50:46.822466Z") / 1000));
+	});
+
+	it("accepts numeric values as well as strings", () => {
+		const result = parseKimiUsagePayload({
+			usage: { limit: 200, used: 50, remaining: 150, resetTime: "2026-07-25T00:00:00Z" },
+		});
+		assert.equal(result?.weekly?.usedPercent, 25);
+	});
+
+	it("classifies sub-windows by duration", () => {
+		const result = parseKimiUsagePayload({
+			limits: [
+				{ window: { duration: 5, timeUnit: "TIME_UNIT_HOUR" }, detail: { limit: "10", used: "1", remaining: "9", resetTime: "2026-07-23T20:00:00Z" } },
+				{ window: { duration: 7, timeUnit: "TIME_UNIT_DAY" }, detail: { limit: "10", used: "5", remaining: "5", resetTime: "2026-07-30T00:00:00Z" } },
+				{ window: { duration: 1, timeUnit: "TIME_UNIT_MONTH" }, detail: { limit: "10", used: "9", remaining: "1", resetTime: "2026-08-22T00:00:00Z" } },
+			],
+		});
+		assert.equal(result?.rolling?.usedPercent, 10);
+		assert.equal(result?.weekly?.usedPercent, 50);
+		assert.equal(result?.monthly?.usedPercent, 90);
+	});
+
+	it("derives remainingPercent from usedPercent when remaining is missing", () => {
+		const result = parseKimiUsagePayload({
+			usage: { limit: "100", used: "40", resetTime: "2026-07-25T00:00:00Z" },
+		});
+		assert.equal(result?.weekly?.remainingPercent, 60);
+	});
+
+	it("returns undefined for unusable payloads", () => {
+		assert.equal(parseKimiUsagePayload(undefined), undefined);
+		assert.equal(parseKimiUsagePayload(null), undefined);
+		assert.equal(parseKimiUsagePayload({}), undefined);
+		assert.equal(parseKimiUsagePayload({ usage: { limit: "abc", used: "def" } }), undefined);
 	});
 });

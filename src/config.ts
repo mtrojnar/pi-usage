@@ -15,6 +15,7 @@ export const MAX_BODY_BYTES = 512_000;
 export const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 export const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const KIMI_CODING_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
 export const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "opencode-go.json");
 export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";

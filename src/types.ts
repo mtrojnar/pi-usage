@@ -155,7 +155,7 @@ export interface SubscriptionUsage {
 	monthly?: SubscriptionQuotaWindow;
 	retryAfterSeconds?: number;
 	retryResetAt?: number;
-	source?: "probe" | "headers";
+	source?: "usage_api" | "probe" | "headers";
 	errorMessage?: string;
 	error?: string;
 }

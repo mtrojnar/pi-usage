@@ -7,7 +7,7 @@ import type {
 	SubscriptionQuotaWindow,
 } from "./types.ts";
 import { apiKeyFromCredential, envApiKey, readAuthJson } from "./auth.ts";
-import { clampPercent } from "./format.ts";
+import { clampPercent, errorText } from "./format.ts";
 import {
 	hasHeaderPrefix,
 	headerValue,
@@ -26,7 +26,17 @@ import {
 	type PiModelLike,
 } from "./probe.ts";
 
+import { fetchWithTimeout, piUsageUserAgent, readErrorDetail, readResponseJson } from "./http.ts";
+import type { UsageApiWindows } from "./kimi.ts";
+
 // ───────── Types ─────────
+
+export interface SubscriptionUsageApiConfig {
+	/** Dedicated quota endpoint (GET, Bearer auth), tried before model probing. */
+	url: string;
+	/** Maps the endpoint's payload to generic quota windows; undefined = unusable payload. */
+	parse: (payload: unknown) => UsageApiWindows | undefined;
+}
 
 export interface SubscriptionProviderConfig {
 	provider: string;
@@ -38,6 +48,7 @@ export interface SubscriptionProviderConfig {
 	preferredModelIds?: string[];
 	documentedModels?: SubscriptionProbeModel[];
 	quotaHeaderPrefixes?: string[];
+	usageApi?: SubscriptionUsageApiConfig;
 }
 
 const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
@@ -207,6 +218,62 @@ export function parseSubscriptionUsageHeaders(
 	};
 }
 
+// ───────── Usage Endpoint ─────────
+
+export type SubscriptionUsageApiResult =
+	| { success: true; usage: SubscriptionUsage }
+	| { success: false; error: string };
+
+/**
+ * Read a provider's dedicated quota endpoint (no model request, no usage billing).
+ * Returns quota windows mapped by the provider-specific parser.
+ */
+export async function checkSubscriptionUsageApi(
+	config: SubscriptionProviderConfig,
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<SubscriptionUsageApiResult> {
+	if (!config.usageApi) return { success: false, error: "no usage endpoint configured" };
+	try {
+		const response = await fetchWithTimeout(config.usageApi.url, {
+			headers: {
+				"Authorization": `Bearer ${apiKey}`,
+				"Accept": "application/json",
+				"User-Agent": piUsageUserAgent(),
+			},
+		}, signal);
+
+		if (!response.ok) {
+			return { success: false, error: `${config.label} usage API: ${await readErrorDetail(response, signal)}` };
+		}
+
+		const windows = config.usageApi.parse(await readResponseJson(response, signal));
+		if (!windows) {
+			return { success: false, error: `${config.label} usage API: no usage windows` };
+		}
+
+		const exhausted = [windows.rolling, windows.weekly, windows.monthly]
+			.some((window) => (window?.usedPercent ?? 0) >= 100 || (window?.remainingPercent ?? 100) <= 0);
+		return {
+			success: true,
+			usage: {
+				provider: config.provider,
+				label: config.label,
+				shortLabel: config.shortLabel,
+				available: !exhausted,
+				status: exhausted ? "rate_limited" : "available",
+				quotaSource: "usage api",
+				rolling: windows.rolling,
+				weekly: windows.weekly,
+				monthly: windows.monthly,
+				source: "usage_api",
+			},
+		};
+	} catch (e: unknown) {
+		return { success: false, error: errorText(e) };
+	}
+}
+
 // ───────── Model Probing ─────────
 
 function probeHeaders(apiKey: string, model: SubscriptionProbeModel): Record<string, string> {
@@ -279,7 +346,18 @@ export async function checkSubscriptionProviderUsage(
 	});
 	if (!apiKey) return emptyUsage();
 
-	return probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
+	// Dedicated quota endpoint first (no model request, no usage billing).
+	let usageApiError: string | undefined;
+	if (config.usageApi) {
+		const apiResult = await checkSubscriptionUsageApi(config, apiKey, signal);
+		if (apiResult.success) return apiResult.usage;
+		if (signal?.aborted) {
+			return { ...emptyUsage(), status: "error", source: "usage_api", error: apiResult.error };
+		}
+		usageApiError = apiResult.error;
+	}
+
+	const probeResult = await probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
 		label: config.label,
 		models: await getSubscriptionCheckModels(config, preferredModel),
 		signal,
@@ -300,4 +378,8 @@ export async function checkSubscriptionProviderUsage(
 					: "failed",
 		emptyUsage,
 	});
+	if (usageApiError && probeResult.status === "error") {
+		probeResult.error = `${usageApiError}; fallback probe: ${probeResult.errorMessage ?? probeResult.error ?? "failed"}`;
+	}
+	return probeResult;
 }
