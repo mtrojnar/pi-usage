@@ -174,15 +174,27 @@ function applyWindow(
 	usage[key] = value;
 }
 
+/**
+ * True when the response carried real Copilot rate-limit signal (quota
+ * headers or a limit error) — as opposed to a bare successful response that
+ * only confirms the model works. Only real signal should mark quota
+ * freshness for deferring proactive refreshes.
+ */
+export function hasCopilotHeaderSignal(headers: Record<string, string>, status: number): boolean {
+	return hasHeaderPrefix(headers, "x-ratelimit-") || hasHeaderPrefix(headers, "x-copilot-")
+		|| status === 429 || status === 402;
+}
+
 export function parseCopilotUsageHeaders(
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: CopilotUsage,
 ): CopilotUsage | undefined {
-	const hasQuotaHeaders = hasHeaderPrefix(headers, "x-ratelimit-") || hasHeaderPrefix(headers, "x-copilot-");
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
-	const hasPassiveSignal = hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && !!modelId);
+	// Bare 2xx responses still parse for status/model recovery, but carry no
+	// quota data and must not count as freshness for deferring refreshes.
+	const hasPassiveSignal = hasCopilotHeaderSignal(headers, status) || (status >= 200 && status < 300 && !!modelId);
 	if (!hasPassiveSignal) return undefined;
 
 	const inferredStatus: GoModelStatus = status === 429

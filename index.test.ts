@@ -70,11 +70,13 @@ import {
 } from "./src/render.ts";
 import {
 	checkAnthropicUsageFromUsageApi,
+	hasAnthropicHeaderSignal,
 	isAnthropicModelUnavailable,
 	parseAnthropicUsageHeaders,
 } from "./src/anthropic.ts";
 import {
 	getCopilotBaseUrl,
+	hasCopilotHeaderSignal,
 	isCopilotModelUnavailable,
 	isCopilotQuotaMessage,
 	normalizeCopilotDomain,
@@ -83,6 +85,7 @@ import {
 import {
 	getOpenCodeGoQuotaHeaderWindows,
 	hasCompleteGoQuotaData,
+	hasOpenCodeGoHeaderSignal,
 	hasOpenCodeGoQuotaHeaders,
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
@@ -936,6 +939,13 @@ describe("parseAnthropicUsageHeaders", () => {
 	it("returns undefined when no Anthropic signal is present", () => {
 		assert.equal(parseAnthropicUsageHeaders({ server: "test" }, 200), undefined);
 	});
+
+	it("distinguishes real Anthropic signal from bare successful responses", () => {
+		assert.equal(hasAnthropicHeaderSignal({ "anthropic-ratelimit-unified-status": "allowed" }, 200), true);
+		assert.equal(hasAnthropicHeaderSignal({}, 429), true);
+		assert.equal(hasAnthropicHeaderSignal({}, 402), true);
+		assert.equal(hasAnthropicHeaderSignal({ server: "test" }, 200), false);
+	});
 });
 
 describe("checkAnthropicUsageFromUsageApi", () => {
@@ -1044,6 +1054,14 @@ describe("parseCopilotUsageHeaders", () => {
 	it("returns undefined when no Copilot signal is present", () => {
 		assert.equal(parseCopilotUsageHeaders({ server: "test" }, 200), undefined);
 	});
+
+	it("distinguishes real Copilot signal from bare successful responses", () => {
+		assert.equal(hasCopilotHeaderSignal({ "x-ratelimit-remaining": "10" }, 200), true);
+		assert.equal(hasCopilotHeaderSignal({ "x-copilot-quota": "1" }, 200), true);
+		assert.equal(hasCopilotHeaderSignal({}, 429), true);
+		assert.equal(hasCopilotHeaderSignal({}, 402), true);
+		assert.equal(hasCopilotHeaderSignal({ server: "test" }, 200), false);
+	});
 });
 
 describe("Copilot helpers", () => {
@@ -1076,7 +1094,7 @@ describe("parseSubscriptionUsageHeaders", () => {
 	};
 
 	it("parses generic subscription quota headers", () => {
-		const usage = parseSubscriptionUsageHeaders(zenConfig, {
+		const parsed = parseSubscriptionUsageHeaders(zenConfig, {
 			"x-opencode-status": "available",
 			"x-opencode-model": "big-pickle",
 			"x-opencode-rolling-used-percent": "33",
@@ -1084,7 +1102,9 @@ describe("parseSubscriptionUsageHeaders", () => {
 			"x-opencode-monthly-reset-after-seconds": "7200",
 		}, 200);
 
-		assert.ok(usage);
+		assert.ok(parsed);
+		assert.equal(parsed.hasSignal, true);
+		const usage = parsed.usage;
 		assert.equal(usage.provider, "opencode");
 		assert.equal(usage.status, "available");
 		assert.equal(usage.workingModel, "big-pickle");
@@ -1095,15 +1115,35 @@ describe("parseSubscriptionUsageHeaders", () => {
 	});
 
 	it("infers generic subscription rate limit from 429", () => {
-		const usage = parseSubscriptionUsageHeaders(zenConfig, { "retry-after": "20" }, 429, "big-pickle");
-		assert.ok(usage);
-		assert.equal(usage.status, "rate_limited");
-		assert.equal(usage.rateLimitedModel, "big-pickle");
-		assert.match(usage.errorMessage ?? "", /20s/);
+		const parsed = parseSubscriptionUsageHeaders(zenConfig, { "retry-after": "20" }, 429, "big-pickle");
+		assert.ok(parsed);
+		assert.equal(parsed.hasSignal, true);
+		assert.equal(parsed.usage.status, "rate_limited");
+		assert.equal(parsed.usage.rateLimitedModel, "big-pickle");
+		assert.match(parsed.usage.errorMessage ?? "", /20s/);
 	});
 
 	it("returns undefined without a generic subscription signal", () => {
 		assert.equal(parseSubscriptionUsageHeaders(zenConfig, { server: "test" }, 200), undefined);
+	});
+
+	it("treats bare successful responses as no quota signal", () => {
+		const previous = {
+			provider: "opencode",
+			label: "OpenCode Zen",
+			shortLabel: "Zen",
+			available: true,
+			status: "available",
+			rolling: { usedPercent: 100, resetAt: 1 },
+		} satisfies SubscriptionUsage;
+		const parsed = parseSubscriptionUsageHeaders(zenConfig, { server: "test" }, 200, "big-pickle", previous);
+
+		// Still parses (status/model recovery), but must not count as freshness.
+		assert.ok(parsed);
+		assert.equal(parsed.hasSignal, false);
+		assert.equal(parsed.usage.status, "available");
+		assert.equal(parsed.usage.workingModel, "big-pickle");
+		assert.equal(parsed.usage.rolling?.usedPercent, 100);
 	});
 });
 
@@ -1269,6 +1309,13 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 		}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }));
 		assert.ok(usage);
 		assert.equal(usage.quotaError, undefined);
+	});
+
+	it("distinguishes real Go signal from bare successful responses", () => {
+		assert.equal(hasOpenCodeGoHeaderSignal({ "x-opencode-go-rolling-used-percent": "25" }, 200), true);
+		assert.equal(hasOpenCodeGoHeaderSignal({}, 429), true);
+		assert.equal(hasOpenCodeGoHeaderSignal({}, 402), true);
+		assert.equal(hasOpenCodeGoHeaderSignal({ server: "test" }, 200), false);
 	});
 });
 
@@ -1868,6 +1915,23 @@ describe("renderSubscriptionWindows", () => {
 		assert.match(result, /rate limited/);
 		assert.match(result, /retry: 30s/);
 		assert.match(result, /big-pickle/);
+	});
+
+	it("renders expired windows as stale instead of the stale percentage", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "kimi-coding",
+			label: "Kimi Coding",
+			shortLabel: "Kimi",
+			available: true,
+			status: "available",
+			rolling: { usedPercent: 100, remainingPercent: 0, resetAt: Math.round(Date.now() / 1000) - 30 },
+			weekly: { usedPercent: 61, remainingPercent: 39, resetAt: Math.round(Date.now() / 1000) + 86400 },
+		};
+		const result = renderSubscriptionWindows(subscription, identity, false).join("\n");
+		assert.match(result, /rolling/);
+		assert.match(result, /stale · refreshing/);
+		assert.doesNotMatch(result, /100%/);
+		assert.match(result, /61%/);
 	});
 });
 

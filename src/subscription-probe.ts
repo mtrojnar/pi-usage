@@ -161,13 +161,20 @@ function firstPrefixedHeader(headers: Record<string, string>, prefixes: string[]
 	return undefined;
 }
 
+export interface SubscriptionHeaderParse {
+	usage: SubscriptionUsage;
+	/** True when the response carried real provider signal (quota/provider headers, 429/402) —
+	 *  as opposed to a bare successful response that only confirms the model works. */
+	hasSignal: boolean;
+}
+
 export function parseSubscriptionUsageHeaders(
 	config: SubscriptionProviderConfig,
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: SubscriptionUsage,
-): SubscriptionUsage | undefined {
+): SubscriptionHeaderParse | undefined {
 	const prefixes = config.quotaHeaderPrefixes ?? [config.provider];
 	const hasProviderHeaders = prefixes.some((prefix) => hasHeaderPrefix(headers, `x-${prefix}-`));
 	const statusHeader = firstPrefixedHeader(headers, prefixes, "status");
@@ -181,6 +188,11 @@ export function parseSubscriptionUsageHeaders(
 	const hasPassiveSignal = hasProviderHeaders || hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && !!responseModel);
 	if (!hasPassiveSignal) return undefined;
 
+	// Only real provider signal marks a quota freshness update. A bare 2xx carries
+	// no quota data; treating it as fresh would defer proactive refreshes forever
+	// in active sessions and pin stale quota windows past their reset time.
+	const hasSignal = hasProviderHeaders || hasQuotaHeaders || status === 429 || status === 402;
+
 	const inferredStatus: GoModelStatus = headerStatus
 		?? (status === 429
 			? "rate_limited"
@@ -193,28 +205,31 @@ export function parseSubscriptionUsageHeaders(
 	const limited = inferredStatus === "rate_limited" || inferredStatus === "credits_error";
 
 	return {
-		provider: config.provider,
-		label: config.label,
-		shortLabel: config.shortLabel,
-		available,
-		status: inferredStatus,
-		workingModel: available ? responseModel ?? previous?.workingModel : previous?.workingModel,
-		rateLimitedModel: limited ? responseModel ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
-		checkedModels: previous?.checkedModels,
-		totalModels: previous?.totalModels,
-		quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
-		rolling: rolling.window ?? previous?.rolling,
-		weekly: weekly.window ?? previous?.weekly,
-		monthly: monthly.window ?? previous?.monthly,
-		...retryResetFields(limited, retryAfterSeconds, previous),
-		source: "headers",
-		errorMessage: limited
-			? retryAfterSeconds > 0
-				? `Rate limited; retry after ${retryAfterSeconds}s`
-				: inferredStatus === "credits_error" ? "Quota exhausted" : "Rate limited"
-			: inferredStatus === "error"
-				? `HTTP ${status}`
-				: undefined,
+		hasSignal,
+		usage: {
+			provider: config.provider,
+			label: config.label,
+			shortLabel: config.shortLabel,
+			available,
+			status: inferredStatus,
+			workingModel: available ? responseModel ?? previous?.workingModel : previous?.workingModel,
+			rateLimitedModel: limited ? responseModel ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
+			checkedModels: previous?.checkedModels,
+			totalModels: previous?.totalModels,
+			quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
+			rolling: rolling.window ?? previous?.rolling,
+			weekly: weekly.window ?? previous?.weekly,
+			monthly: monthly.window ?? previous?.monthly,
+			...retryResetFields(limited, retryAfterSeconds, previous),
+			source: "headers",
+			errorMessage: limited
+				? retryAfterSeconds > 0
+					? `Rate limited; retry after ${retryAfterSeconds}s`
+					: inferredStatus === "credits_error" ? "Quota exhausted" : "Rate limited"
+				: inferredStatus === "error"
+					? `HTTP ${status}`
+					: undefined,
+		},
 	};
 }
 
@@ -367,7 +382,7 @@ export async function checkSubscriptionProviderUsage(
 			body: JSON.stringify(probeBody(model)),
 			signal: probeSignal,
 		}),
-		parseHeaders: (headers, status, modelId) => parseSubscriptionUsageHeaders(config, headers, status, modelId),
+		parseHeaders: (headers, status, modelId) => parseSubscriptionUsageHeaders(config, headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			isSubscriptionModelUnavailable(message)
 				? "unavailable"
