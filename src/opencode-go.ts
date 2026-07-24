@@ -6,6 +6,7 @@ import type {
 	OpenCodeGoUsage,
 	SelectedModel,
 	SubscriptionQuotaWindow,
+	UsageContext,
 } from "./types.ts";
 import { OPENCODE_GO_DASHBOARD_URL_PREFIX, OPENCODE_GO_PROVIDER } from "./config.ts";
 import { clampPercent, errorText, truncate } from "./format.ts";
@@ -53,8 +54,8 @@ const GO_QUOTA_HEADER_PREFIXES = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes
 
 // ───────── Auth Helpers ─────────
 
-export function getOpenCodeApiKey(): string | undefined {
-	return getSubscriptionApiKey(OPENCODE_GO_PROVIDER_CONFIG);
+export function getOpenCodeApiKey(ctx: Pick<UsageContext, "modelRegistry">): Promise<string | undefined> {
+	return getSubscriptionApiKey(ctx, OPENCODE_GO_PROVIDER_CONFIG);
 }
 
 // ───────── Dashboard Quota Parsing ─────────
@@ -199,6 +200,7 @@ function quotaFields(quota: OpenCodeGoQuotaResult): Partial<OpenCodeGoUsage> {
 }
 
 export async function checkOpenCodeGoUsage(
+	ctx: Pick<UsageContext, "modelRegistry">,
 	apiKey: string | undefined,
 	configState: OpenCodeGoQuotaConfigState,
 	signal?: AbortSignal,
@@ -222,6 +224,6 @@ export async function checkOpenCodeGoUsage(
 		return { ...goIdentity(), available: false, status: "error", error: "OpenCode Go check aborted" };
 	}
 
-	const modelCheck = await checkSubscriptionProviderUsage(OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal, preferredModel);
+	const modelCheck = await checkSubscriptionProviderUsage(ctx, OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal, preferredModel);
 	return { ...modelCheck, ...quotaFields(quota), quotaError: quota.error };
 }

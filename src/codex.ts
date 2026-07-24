@@ -3,16 +3,16 @@ import type {
 	CodexUsage,
 	CodexUsageApiResult,
 	OpenAIUsageResponse,
+	UsageContext,
 	OpenAIUsageWindow,
 } from "./types.ts";
 import {
-	CHECK_TIMEOUT_MS,
 	CODEX_PROBE_MODEL,
 	OPENAI_CODEX_PROVIDER,
 	OPENAI_USAGE_URL,
 	extractAccountId,
 } from "./config.ts";
-import { oauthAccessToken, readStoredCredential, refreshProviderToken } from "./auth.ts";
+import { readStoredCredential, resolveProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import { hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
 import {
@@ -27,19 +27,15 @@ import {
 
 // ───────── Codex Auth ─────────
 
-export async function getCodexToken(): Promise<{ token: string; accountId: string } | undefined> {
-	const credential = await readStoredCredential(OPENAI_CODEX_PROVIDER);
-	// Use the stored access token when still valid; if it has expired, let pi
-	// refresh it (bounded, so a stuck refresh can't hang startup). Without this
-	// an expired token silently hides Codex usage until the token happens to be
-	// refreshed by using the provider elsewhere.
-	const token = oauthAccessToken(credential)
-		?? (credential?.type === "oauth"
-			? await refreshProviderToken(OPENAI_CODEX_PROVIDER, CHECK_TIMEOUT_MS)
-			: undefined);
+export async function getCodexToken(ctx: Pick<UsageContext, "modelRegistry">): Promise<{ token: string; accountId: string } | undefined> {
+	const [credential, resolved] = await Promise.all([
+		readStoredCredential(OPENAI_CODEX_PROVIDER),
+		resolveProviderAuth(ctx, OPENAI_CODEX_PROVIDER),
+	]);
+	const token = resolved?.apiKey;
 	if (!token) return undefined;
 
-	const accountId = (credential as CodexOAuthCredential).accountId ?? extractAccountId(token);
+	const accountId = (credential as CodexOAuthCredential | undefined)?.accountId ?? extractAccountId(token);
 	return accountId ? { token, accountId } : undefined;
 }
 

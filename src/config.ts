@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { OpenCodeGoQuotaConfigState, UsageContext } from "./types.ts";
 
 // ───────── Constants ─────────
@@ -97,7 +98,7 @@ export function readUsageWidgetSetting(ctx?: UsageContext): boolean | undefined 
 	let value = widgetSettingFromConfig(readJsonObject(usageConfigPath()));
 	const isProjectTrusted = typeof ctx?.isProjectTrusted === "function" && ctx.isProjectTrusted();
 	if (isProjectTrusted) {
-		const projectValue = widgetSettingFromConfig(readJsonObject(path.join(ctx.cwd, ".pi", USAGE_CONFIG_FILE)));
+		const projectValue = widgetSettingFromConfig(readJsonObject(path.join(ctx.cwd, CONFIG_DIR_NAME, USAGE_CONFIG_FILE)));
 		if (projectValue !== undefined) value = projectValue;
 	}
 	return value;

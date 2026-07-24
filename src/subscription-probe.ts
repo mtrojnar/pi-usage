@@ -5,8 +5,9 @@ import type {
 	SubscriptionProbeModel,
 	SubscriptionUsage,
 	SubscriptionQuotaWindow,
+	UsageContext,
 } from "./types.ts";
-import { apiKeyFromCredential, envApiKey, readAuthJson } from "./auth.ts";
+import { resolveProviderAuth } from "./auth.ts";
 import { clampPercent } from "./format.ts";
 import {
 	hasHeaderPrefix,
@@ -44,13 +45,15 @@ const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "o
 
 // ───────── Auth Helpers ─────────
 
-export function getSubscriptionApiKey(config: SubscriptionProviderConfig): string | undefined {
-	const auth = readAuthJson();
+export async function getSubscriptionApiKey(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	config: SubscriptionProviderConfig,
+): Promise<string | undefined> {
 	for (const provider of config.authProviderIds ?? [config.provider]) {
-		const key = apiKeyFromCredential(auth?.[provider]);
-		if (key) return key;
+		const resolved = await resolveProviderAuth(ctx, provider);
+		if (resolved) return resolved.apiKey;
 	}
-	return envApiKey(...(config.envKeys ?? []))?.key;
+	return undefined;
 }
 
 // ───────── Model Helpers ─────────
@@ -58,6 +61,7 @@ export function getSubscriptionApiKey(config: SubscriptionProviderConfig): strin
 export async function getSubscriptionCheckModels(
 	config: SubscriptionProviderConfig,
 	preferredModel?: SelectedModel,
+	ctx?: Pick<UsageContext, "modelRegistry">,
 ): Promise<SubscriptionProbeModel[]> {
 	const allowedApis = new Set(config.supportedApis ?? DEFAULT_SUPPORTED_APIS);
 	const modelsById = new Map<string, SubscriptionProbeModel>();
@@ -65,22 +69,17 @@ export async function getSubscriptionCheckModels(
 		modelsById.set(model.id, model);
 	}
 
-	try {
-		const { getModels } = await import("@earendil-works/pi-ai/compat");
-		const getProviderModels = getModels as (provider: string) => PiModelLike[];
-		for (const model of getProviderModels(config.provider)) {
-			const api = asProbeApi(model.api);
-			if (!api || !allowedApis.has(api) || modelsById.has(model.id)) continue;
-			modelsById.set(model.id, {
-				id: model.id,
-				api,
-				endpoint: resolveProbeEndpoint(model.baseUrl, api),
-				costRank: modelCostRank(model, 0),
-				headers: model.headers,
-			});
-		}
-	} catch {
-		// pi-ai not available — use documented models only.
+	const providerModels = ctx?.modelRegistry.getProvider(config.provider)?.getModels() ?? [];
+	for (const model of providerModels as readonly PiModelLike[]) {
+		const api = asProbeApi(model.api);
+		if (!api || !allowedApis.has(api) || modelsById.has(model.id)) continue;
+		modelsById.set(model.id, {
+			id: model.id,
+			api,
+			endpoint: resolveProbeEndpoint(model.baseUrl, api),
+			costRank: modelCostRank(model, 0),
+			headers: model.headers,
+		});
 	}
 
 	// Prefer the currently selected model when it belongs to this provider.
@@ -265,6 +264,7 @@ export function isSubscriptionQuotaMessage(message: string): boolean {
 }
 
 export async function checkSubscriptionProviderUsage(
+	ctx: Pick<UsageContext, "modelRegistry">,
 	config: SubscriptionProviderConfig,
 	apiKey: string | undefined,
 	signal?: AbortSignal,
@@ -281,7 +281,7 @@ export async function checkSubscriptionProviderUsage(
 
 	return probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
 		label: config.label,
-		models: await getSubscriptionCheckModels(config, preferredModel),
+		models: await getSubscriptionCheckModels(config, preferredModel, ctx),
 		signal,
 		request: (model, probeSignal) => fetch(model.endpoint, {
 			method: "POST",

@@ -288,7 +288,7 @@ export default function (pi: ExtensionAPI) {
 
 		void (async () => {
 			try {
-				const codexAuth = await getCodexToken();
+				const codexAuth = await getCodexToken(ctx);
 				if (!codexAuth || controller.signal.aborted || generation !== sessionGeneration) return;
 
 				codexUsageRequestAt = Date.now();
@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI) {
 			// Check Codex; activity scheduler or recent passive headers defer auto probes.
 			const skipCodexCheck = trigger === "auto"
 				&& (CODEX_RESPONSE_REFRESH_ENABLED || passiveUpdateIsFresh(OPENAI_CODEX_PROVIDER) || recentCodexUsageRequest());
-			const codexAuth = skipCodexCheck ? undefined : await getCodexToken();
+			const codexAuth = skipCodexCheck ? undefined : await getCodexToken(ctx);
 			if (codexAuth) {
 				codexUsageRequestAt = Date.now();
 				codexResponseCleanTicks = 0;
@@ -390,11 +390,11 @@ export default function (pi: ExtensionAPI) {
 
 			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
 			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(ANTHROPIC_PROVIDER);
-			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth();
+			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth(ctx);
 			if (anthropicAuth) {
 				runCheck(
 					ANTHROPIC_PROVIDER,
-					checkAnthropicUsage(anthropicAuth, signal, selected),
+					checkAnthropicUsage(ctx, anthropicAuth, signal, selected),
 					() => anthropicUsage,
 					ANTHROPIC_REFRESH_FIELDS,
 					(result) => { anthropicUsage = normalizeAnthropicResetTimes(result); },
@@ -406,11 +406,11 @@ export default function (pi: ExtensionAPI) {
 
 			// Check GitHub Copilot; recent passive headers defer auto probes.
 			const skipCopilotCheck = trigger === "auto" && passiveUpdateIsFresh(GITHUB_COPILOT_PROVIDER);
-			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth();
+			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth(ctx);
 			if (copilotAuth) {
 				runCheck(
 					GITHUB_COPILOT_PROVIDER,
-					checkCopilotUsage(copilotAuth, signal, selected),
+					checkCopilotUsage(ctx, copilotAuth, signal, selected),
 					() => copilotUsage,
 					COPILOT_REFRESH_FIELDS,
 					(result) => { copilotUsage = normalizeCopilotResetTimes(result); },
@@ -426,11 +426,11 @@ export default function (pi: ExtensionAPI) {
 				&& passiveUpdateIsFresh(OPENCODE_GO_PROVIDER)
 				&& (!goQuotaState.config || goQuotaUpdateIsFresh())
 				&& !goQuotaState.error;
-			const goKey = skipGoCheck ? undefined : getOpenCodeApiKey();
+			const goKey = skipGoCheck ? undefined : await getOpenCodeApiKey(ctx);
 			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
 				runCheck(
 					OPENCODE_GO_PROVIDER,
-					checkOpenCodeGoUsage(goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
+					checkOpenCodeGoUsage(ctx, goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
 					() => goUsage,
 					GO_REFRESH_FIELDS,
 					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
@@ -444,14 +444,14 @@ export default function (pi: ExtensionAPI) {
 			// Check other OpenAI/Anthropic-compatible subscription providers.
 			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
 				if (trigger === "auto" && passiveUpdateIsFresh(providerConfig.provider)) continue;
-				const apiKey = getSubscriptionApiKey(providerConfig);
+				const apiKey = await getSubscriptionApiKey(ctx, providerConfig);
 				if (!apiKey) {
 					subscriptionUsages.delete(providerConfig.provider);
 					continue;
 				}
 				runCheck(
 					providerConfig.provider,
-					checkSubscriptionProviderUsage(providerConfig, apiKey, signal, preferredFor(providerConfig.provider)),
+					checkSubscriptionProviderUsage(ctx, providerConfig, apiKey, signal, preferredFor(providerConfig.provider)),
 					() => subscriptionUsages.get(providerConfig.provider),
 					SUBSCRIPTION_REFRESH_FIELDS,
 					(result) => {

@@ -1,4 +1,4 @@
-import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 // ───────── Types ─────────
 
@@ -208,7 +208,8 @@ export interface UsageContext {
 	cwd: string;
 	ui: ExtensionUIContext;
 	model?: SelectedModel;
-	isProjectTrusted?(): boolean;
+	modelRegistry: ExtensionContext["modelRegistry"];
+	isProjectTrusted(): boolean;
 }
 
 export interface OpenAIUsageWindow {

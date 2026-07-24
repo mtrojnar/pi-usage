@@ -7,12 +7,13 @@ import type {
 	GoModelStatus,
 	SelectedModel,
 	SubscriptionProbeApi,
+	UsageContext,
 } from "./types.ts";
 import {
 	GITHUB_COPILOT_PROBE_MODEL,
 	GITHUB_COPILOT_PROVIDER,
 } from "./config.ts";
-import { apiKeyFromCredential, envApiKey, oauthAccessToken, readStoredCredential } from "./auth.ts";
+import { readStoredCredential, resolveProviderAuth } from "./auth.ts";
 import { clampPercent } from "./format.ts";
 import {
 	hasHeaderPrefix,
@@ -92,28 +93,21 @@ function availableModelIds(value: unknown): string[] | undefined {
 	return ids.length > 0 ? ids : undefined;
 }
 
-export async function getCopilotAuth(): Promise<CopilotAuth | undefined> {
-	const credential = await readStoredCredential(GITHUB_COPILOT_PROVIDER);
-	const accessToken = oauthAccessToken(credential);
-	if (accessToken) {
-		const oauth = credential as CopilotOAuthCredential;
-		const enterpriseDomain = normalizeCopilotDomain(oauth.enterpriseUrl);
-		return {
-			token: accessToken,
-			source: "auth.json",
-			baseUrl: getCopilotBaseUrl(accessToken, enterpriseDomain),
-			enterpriseDomain,
-			availableModelIds: availableModelIds(oauth.availableModelIds),
-		};
-	}
-
-	const storedKey = apiKeyFromCredential(credential);
-	if (storedKey) return { token: storedKey, source: "auth.json", baseUrl: getCopilotBaseUrl(storedKey) };
-
-	const envToken = envApiKey("COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN");
-	if (envToken) return { token: envToken.key, source: envToken.source, baseUrl: getCopilotBaseUrl(envToken.key) };
-
-	return undefined;
+export async function getCopilotAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<CopilotAuth | undefined> {
+	const [credential, resolved] = await Promise.all([
+		readStoredCredential(GITHUB_COPILOT_PROVIDER),
+		resolveProviderAuth(ctx, GITHUB_COPILOT_PROVIDER),
+	]);
+	if (!resolved) return undefined;
+	const oauth = credential as CopilotOAuthCredential | undefined;
+	const enterpriseDomain = normalizeCopilotDomain(oauth?.enterpriseUrl);
+	return {
+		token: resolved.apiKey,
+		source: resolved.source ?? "pi auth",
+		baseUrl: resolved.baseUrl ?? getCopilotBaseUrl(resolved.apiKey, enterpriseDomain),
+		enterpriseDomain,
+		availableModelIds: availableModelIds(oauth?.availableModelIds),
+	};
 }
 
 // ───────── Header Parsing ─────────
@@ -240,24 +234,20 @@ function fallbackCopilotModels(auth: CopilotAuth): CopilotCheckModel[] {
 		}));
 }
 
-async function getCopilotCheckModels(auth: CopilotAuth, preferredModel?: SelectedModel): Promise<CopilotCheckModel[]> {
+async function getCopilotCheckModels(ctx: Pick<UsageContext, "modelRegistry">, auth: CopilotAuth, preferredModel?: SelectedModel): Promise<CopilotCheckModel[]> {
 	const modelsById = new Map<string, CopilotCheckModel>();
 	const allowed = auth.availableModelIds ? new Set(auth.availableModelIds) : undefined;
 
-	try {
-		const { getModels } = await import("@earendil-works/pi-ai/compat");
-		for (const model of getModels(GITHUB_COPILOT_PROVIDER) as PiModelLike[]) {
-			const api = asProbeApi(model.api);
-			if (!api || (allowed && !allowed.has(model.id))) continue;
-			modelsById.set(model.id, {
-				id: model.id,
-				api,
-				endpoint: resolveProbeEndpoint(auth.baseUrl || model.baseUrl || COPILOT_API_BASE_URL, api),
-				costRank: modelCostRank(model),
-			});
-		}
-	} catch {
-		// pi-ai not available — use fallback models.
+	const providerModels = ctx.modelRegistry.getProvider(GITHUB_COPILOT_PROVIDER)?.getModels() ?? [];
+	for (const model of providerModels as readonly PiModelLike[]) {
+		const api = asProbeApi(model.api);
+		if (!api || (allowed && !allowed.has(model.id))) continue;
+		modelsById.set(model.id, {
+			id: model.id,
+			api,
+			endpoint: resolveProbeEndpoint(auth.baseUrl || model.baseUrl || COPILOT_API_BASE_URL, api),
+			costRank: modelCostRank(model),
+		});
 	}
 
 	if (modelsById.size === 0) {
@@ -335,14 +325,14 @@ export function isCopilotQuotaMessage(message: string): boolean {
 	return /quota|premium.*requests?|rate limit|too many requests|usage limit|exceeded.*limit|limit.*exceeded/i.test(message);
 }
 
-export async function checkCopilotUsage(auth: CopilotAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<CopilotUsage> {
+export async function checkCopilotUsage(ctx: Pick<UsageContext, "modelRegistry">, auth: CopilotAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<CopilotUsage> {
 	if (!auth) {
 		return { available: false, status: "no_key" };
 	}
 
 	return probeProviderUsage<CopilotCheckModel, CopilotUsage>({
 		label: "GitHub Copilot",
-		models: await getCopilotCheckModels(auth, preferredModel),
+		models: await getCopilotCheckModels(ctx, auth, preferredModel),
 		signal,
 		request: (model, probeSignal) => fetch(model.endpoint, {
 			method: "POST",

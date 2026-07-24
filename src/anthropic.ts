@@ -4,13 +4,14 @@ import type {
 	AnthropicUsageWindow,
 	GoModelStatus,
 	SelectedModel,
+	UsageContext,
 } from "./types.ts";
 import {
 	ANTHROPIC_PROVIDER,
 	ANTHROPIC_PROBE_MODEL,
 	ANTHROPIC_USAGE_URL,
 } from "./config.ts";
-import { apiKeyFromCredential, oauthAccessToken, readStoredCredential } from "./auth.ts";
+import { readStoredCredential, resolveProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import {
 	hasHeaderPrefix,
@@ -67,25 +68,18 @@ function inferAnthropicAuthType(token: string, fallback: AnthropicAuth["type"]):
 	return token.includes("sk-ant-oat") ? "oauth" : fallback;
 }
 
-export async function getAnthropicAuth(): Promise<AnthropicAuth | undefined> {
-	const credential = await readStoredCredential(ANTHROPIC_PROVIDER);
-	const accessToken = oauthAccessToken(credential);
-	if (accessToken) return { token: accessToken, type: "oauth", source: "auth.json" };
-
-	const storedKey = apiKeyFromCredential(credential);
-	if (storedKey) {
-		return { token: storedKey, type: inferAnthropicAuthType(storedKey, "api_key"), source: "auth.json" };
-	}
-
-	const oauthToken = process.env.ANTHROPIC_OAUTH_TOKEN?.trim();
-	if (oauthToken) return { token: oauthToken, type: "oauth", source: "ANTHROPIC_OAUTH_TOKEN" };
-
-	const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-	if (apiKey) {
-		return { token: apiKey, type: inferAnthropicAuthType(apiKey, "api_key"), source: "ANTHROPIC_API_KEY" };
-	}
-
-	return undefined;
+export async function getAnthropicAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<AnthropicAuth | undefined> {
+	const [credential, resolved] = await Promise.all([
+		readStoredCredential(ANTHROPIC_PROVIDER),
+		resolveProviderAuth(ctx, ANTHROPIC_PROVIDER),
+	]);
+	if (!resolved) return undefined;
+	const fallback = credential?.type === "oauth" ? "oauth" : "api_key";
+	return {
+		token: resolved.apiKey,
+		type: inferAnthropicAuthType(resolved.apiKey, fallback),
+		source: resolved.source ?? "pi auth",
+	};
 }
 
 // ───────── Header Parsing ─────────
@@ -221,24 +215,20 @@ export async function checkAnthropicUsageFromUsageApi(token: string, signal?: Ab
 
 // ───────── Model Probing (API-key auth and OAuth fallback) ─────────
 
-async function getAnthropicCheckModels(preferredModel?: SelectedModel): Promise<AnthropicCheckModel[]> {
+async function getAnthropicCheckModels(ctx: Pick<UsageContext, "modelRegistry">, preferredModel?: SelectedModel): Promise<AnthropicCheckModel[]> {
 	const modelsById = new Map<string, AnthropicCheckModel>();
 	for (const model of FALLBACK_ANTHROPIC_MODELS) {
 		modelsById.set(model.id, model);
 	}
 
-	try {
-		const { getModels } = await import("@earendil-works/pi-ai/compat");
-		for (const model of getModels(ANTHROPIC_PROVIDER) as PiModelLike[]) {
-			if (model.api !== "anthropic-messages" || modelsById.has(model.id)) continue;
-			modelsById.set(model.id, {
-				id: model.id,
-				endpoint: resolveProbeEndpoint(model.baseUrl || ANTHROPIC_BASE_URL, "anthropic-messages"),
-				costRank: modelCostRank(model),
-			});
-		}
-	} catch {
-		// pi-ai not available — use fallback models.
+	const providerModels = ctx.modelRegistry.getProvider(ANTHROPIC_PROVIDER)?.getModels() ?? [];
+	for (const model of providerModels as readonly PiModelLike[]) {
+		if (model.api !== "anthropic-messages" || modelsById.has(model.id)) continue;
+		modelsById.set(model.id, {
+			id: model.id,
+			endpoint: resolveProbeEndpoint(model.baseUrl || ANTHROPIC_BASE_URL, "anthropic-messages"),
+			costRank: modelCostRank(model),
+		});
 	}
 
 	// Prefer the currently selected Anthropic model.
@@ -296,10 +286,10 @@ export function isAnthropicModelUnavailable(message: string): boolean {
 	return /model.*(disabled|not.*found|unsupported|unavailable|not.*available|does not exist|invalid)|unsupported.*model/i.test(message);
 }
 
-async function checkAnthropicUsageWithProbe(auth: AnthropicAuth, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
+async function checkAnthropicUsageWithProbe(ctx: Pick<UsageContext, "modelRegistry">, auth: AnthropicAuth, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
 	return probeProviderUsage<AnthropicCheckModel, AnthropicUsage>({
 		label: "Anthropic",
-		models: await getAnthropicCheckModels(preferredModel),
+		models: await getAnthropicCheckModels(ctx, preferredModel),
 		signal,
 		request: (model, probeSignal) => fetch(model.endpoint, {
 			method: "POST",
@@ -316,7 +306,7 @@ async function checkAnthropicUsageWithProbe(auth: AnthropicAuth, signal?: AbortS
 
 // ───────── Public API ─────────
 
-export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
+export async function checkAnthropicUsage(ctx: Pick<UsageContext, "modelRegistry">, auth: AnthropicAuth | undefined, signal?: AbortSignal, preferredModel?: SelectedModel): Promise<AnthropicUsage> {
 	if (!auth) {
 		return { available: false, status: "no_key" };
 	}
@@ -330,7 +320,7 @@ export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signa
 		}
 
 		// Endpoint unavailable — fall back to a probe that surfaces the unified rate-limit headers.
-		const probeResult = await checkAnthropicUsageWithProbe(auth, signal, preferredModel);
+		const probeResult = await checkAnthropicUsageWithProbe(ctx, auth, signal, preferredModel);
 		if (probeResult.status === "error" && !probeResult.fiveHour && !probeResult.weekly) {
 			const probeError = probeResult.errorMessage || probeResult.error;
 			probeResult.error = `${usageApiResult.error}; fallback probe: ${probeError ?? "failed"}`;
@@ -339,5 +329,5 @@ export async function checkAnthropicUsage(auth: AnthropicAuth | undefined, signa
 	}
 
 	// API-key auth has no subscription usage endpoint; probe for availability only.
-	return checkAnthropicUsageWithProbe(auth, signal, preferredModel);
+	return checkAnthropicUsageWithProbe(ctx, auth, signal, preferredModel);
 }

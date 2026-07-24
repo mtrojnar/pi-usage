@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AuthApiKeyCredential, AuthJson, CodexOAuthCredential, CopilotOAuthCredential } from "./types.ts";
+import type { AuthApiKeyCredential, AuthJson, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
 import { agentDir, resolveConfigValue } from "./config.ts";
-import { unrefTimer } from "./http.ts";
 
 // ───────── pi auth.json Access ─────────
 
@@ -42,35 +41,16 @@ export async function readStoredCredential(provider: string): Promise<StoredCred
 	}
 }
 
-/**
- * Fetch a provider token via pi's auth storage, allowing pi to refresh an
- * expired OAuth token (with its usual file locking). Bounded by `timeoutMs`
- * so a slow or stuck refresh can never hang the caller — the concern that led
- * `readStoredCredential` to avoid refreshing at all.
- */
-export async function refreshProviderToken(provider: string, timeoutMs: number): Promise<string | undefined> {
+/** Resolve effective provider auth through pi's session-owned v0.82 model runtime. */
+export async function resolveProviderAuth(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	provider: string,
+): Promise<{ apiKey: string; baseUrl?: string; source?: string } | undefined> {
 	try {
-		const authPath = authJsonPath();
-		if (!fs.existsSync(authPath)) return undefined;
-		const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const bounded = new Promise<undefined>((resolve) => {
-			timer = setTimeout(() => resolve(undefined), timeoutMs);
-			unrefTimer(timer);
-		});
-		const refresh = (async () => {
-			const runtime = await ModelRuntime.create({
-				authPath,
-				modelsPath: null,
-				allowModelNetwork: false,
-			});
-			return (await runtime.getAuth(provider))?.auth.apiKey;
-		})();
-		try {
-			return (await Promise.race([refresh, bounded])) ?? undefined;
-		} finally {
-			if (timer) clearTimeout(timer);
-		}
+		const resolved = await ctx.modelRegistry.getProviderAuth(provider);
+		if (!resolved) return undefined;
+		const apiKey = resolved.auth.apiKey?.trim();
+		return apiKey ? { apiKey, baseUrl: resolved.auth.baseUrl, source: resolved.source } : undefined;
 	} catch {
 		return undefined;
 	}

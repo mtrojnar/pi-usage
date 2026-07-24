@@ -71,11 +71,11 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=0.80.8 <1"
+    "@earendil-works/pi-coding-agent": ">=0.82.0 <1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.2 <1",
-    "@earendil-works/pi-coding-agent": ">=0.80.8 <1",
+    "@earendil-works/pi-ai": "0.82.0",
+    "@earendil-works/pi-coding-agent": "0.82.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.5",
     "typescript": "^5.7.3"
