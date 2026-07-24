@@ -15,6 +15,7 @@ export const MAX_BODY_BYTES = 512_000;
 export const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 export const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const KIMI_CODING_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
 export const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "opencode-go.json");
 export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -25,6 +26,8 @@ export const GITHUB_COPILOT_PROVIDER = "github-copilot";
 export const GITHUB_COPILOT_PROBE_MODEL = "gpt-5.4-nano";
 export const AUTO_REFRESH_MINUTES = parseEnvInt("PI_USAGE_REFRESH_MIN", 30);
 export const UI_REFRESH_SECONDS = parseEnvInt("PI_USAGE_UI_REFRESH_SEC", 60);
+/** Minimum interval between proactive refreshes triggered by expired quota windows. */
+export const EXPIRED_REFRESH_DEBOUNCE_MS = parseEnvInt("PI_USAGE_EXPIRED_REFRESH_DEBOUNCE_SEC", 300) * 1000;
 export const PROACTIVE_REFRESH_ENABLED = parseEnvBool("PI_USAGE_PROACTIVE", true);
 export const CODEX_RESPONSE_REFRESH_ENABLED = parseEnvBool("PI_USAGE_CODEX_RESPONSE_REFRESH", PROACTIVE_REFRESH_ENABLED);
 export const CODEX_RESPONSE_REFRESH_SECONDS = parseEnvInt("PI_USAGE_CODEX_RESPONSE_REFRESH_SEC", 60);

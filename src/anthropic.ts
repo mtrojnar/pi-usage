@@ -103,16 +103,27 @@ function parseUnifiedWindow(headers: Record<string, string>, key: "5h" | "7d"): 
 	};
 }
 
+/**
+ * True when the response carried real Anthropic rate-limit signal (unified
+ * rate-limit headers or a limit error) — as opposed to a bare successful
+ * response that only confirms the model works. Only real signal should mark
+ * quota freshness for deferring proactive refreshes.
+ */
+export function hasAnthropicHeaderSignal(headers: Record<string, string>, status: number): boolean {
+	return hasHeaderPrefix(headers, "anthropic-ratelimit-unified-") || status === 429 || status === 402;
+}
+
 export function parseAnthropicUsageHeaders(
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: AnthropicUsage,
 ): AnthropicUsage | undefined {
-	const hasUnified = hasHeaderPrefix(headers, "anthropic-ratelimit-unified-");
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
-	const hasSignal = hasUnified || status === 429 || (status >= 200 && status < 300 && !!modelId);
-	if (!hasSignal) return undefined;
+	// Bare 2xx responses still parse for status/model recovery, but carry no
+	// quota data and must not count as freshness for deferring refreshes.
+	const hasPassiveSignal = hasAnthropicHeaderSignal(headers, status) || (status >= 200 && status < 300 && !!modelId);
+	if (!hasPassiveSignal) return undefined;
 
 	const parsedFiveHour = parseUnifiedWindow(headers, "5h");
 	const parsedWeekly = parseUnifiedWindow(headers, "7d");

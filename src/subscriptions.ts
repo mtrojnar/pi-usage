@@ -1,5 +1,7 @@
 import type { SubscriptionProbeModel } from "./types.ts";
 import type { SubscriptionProviderConfig } from "./subscription-probe.ts";
+import { KIMI_CODING_USAGE_URL } from "./config.ts";
+import { parseKimiUsagePayload } from "./kimi.ts";
 
 function model(
 	id: string,
@@ -37,6 +39,7 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		supportedApis: ["anthropic-messages"],
 		preferredModelIds: ["k2p7", "kimi-for-coding", "kimi-k2-thinking"],
 		quotaHeaderPrefixes: ["kimi-coding", "kimi"],
+		usageApi: { url: KIMI_CODING_USAGE_URL, parse: parseKimiUsagePayload },
 	},
 	{
 		provider: "zai",
