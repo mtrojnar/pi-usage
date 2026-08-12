@@ -41,7 +41,7 @@ export async function readStoredCredential(provider: string): Promise<StoredCred
 	}
 }
 
-/** Resolve effective provider auth through pi's session-owned v0.82 model runtime. */
+/** Resolve effective provider auth through pi's session-owned model runtime. */
 export async function resolveProviderAuth(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	provider: string,
