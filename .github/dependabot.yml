@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    ignore:
+      # Keep Node declarations aligned with the minimum supported Node major.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+    groups:
+      pi:
+        patterns:
+          - "@earendil-works/pi-ai"
+          - "@earendil-works/pi-coding-agent"
+      development-tooling:
+        patterns:
+          - "@types/node"
+          - "tsx"
+          - "typescript"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

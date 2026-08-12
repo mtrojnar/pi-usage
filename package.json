@@ -74,15 +74,15 @@
     "@earendil-works/pi-coding-agent": ">=0.82.0 <1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.82.0",
-    "@earendil-works/pi-coding-agent": "0.82.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.20.5",
-    "typescript": "^5.7.3"
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@types/node": "22.20.1",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2"
   },
   "allowScripts": {
     "@google/genai": false,
-    "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
     "protobufjs": false
   }
 }
