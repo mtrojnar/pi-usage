@@ -1,6 +1,6 @@
 {
   "name": "@mtrojnar/pi-usage",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Usage and rate-limit monitor for pi coding agent, with startup reports and live footer/widget updates for Codex, Claude, Copilot, OpenCode, and more.",
   "license": "MIT",
   "author": "timm-u and Michał Trojnara",
