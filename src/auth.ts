@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AuthApiKeyCredential, AuthJson, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
+import type { AuthApiKeyCredential, AuthJson, BoundApiKey, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
 import { agentDir, resolveConfigValue } from "./config.ts";
+import { httpOrigin } from "./http.ts";
 
 // ───────── pi auth.json Access ─────────
 
@@ -54,6 +55,50 @@ export async function resolveProviderAuth(
 	} catch {
 		return undefined;
 	}
+}
+
+function validBaseUrl(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed && httpOrigin(trimmed) ? trimmed : undefined;
+}
+
+/**
+ * Resolve the effective request base URL for a provider. Explicit auth and
+ * provider-level URLs take precedence; model URLs are accepted only when all
+ * catalog models share one origin.
+ */
+export function resolveProviderBaseUrl(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	provider: string,
+	explicitBaseUrl?: string,
+): string | undefined {
+	if (explicitBaseUrl !== undefined) return validBaseUrl(explicitBaseUrl);
+
+	try {
+		const providerConfig = ctx.modelRegistry.getProvider(provider);
+		if (!providerConfig) return undefined;
+		if (providerConfig.baseUrl !== undefined) return validBaseUrl(providerConfig.baseUrl);
+
+		const modelBaseUrls = providerConfig.getModels()
+			.map((model) => validBaseUrl(model.baseUrl))
+			.filter((baseUrl): baseUrl is string => baseUrl !== undefined);
+		const origins = new Set(modelBaseUrls.map((baseUrl) => httpOrigin(baseUrl)));
+		return origins.size === 1 ? modelBaseUrls[0] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Resolve an API key together with the base URL that defines its origin. */
+export async function resolveBoundProviderAuth(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	provider: string,
+	providerSpecificBaseUrl?: string,
+): Promise<BoundApiKey | undefined> {
+	const resolved = await resolveProviderAuth(ctx, provider);
+	if (!resolved) return undefined;
+	const baseUrl = resolveProviderBaseUrl(ctx, provider, resolved.baseUrl ?? providerSpecificBaseUrl);
+	return baseUrl ? { apiKey: resolved.apiKey, baseUrl, source: resolved.source } : undefined;
 }
 
 /** Access token from an OAuth credential, unless it is missing or expired. */

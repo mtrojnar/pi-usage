@@ -12,12 +12,12 @@ import {
 	OPENAI_USAGE_URL,
 	extractAccountId,
 } from "./config.ts";
-import { readStoredCredential, resolveProviderAuth } from "./auth.ts";
+import { readStoredCredential, resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import { hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
 import {
 	cancelResponseBody,
-	fetchWithTimeout,
+	fetchSameOriginWithTimeout,
 	piUsageUserAgent,
 	readErrorDetail,
 	readErrorMessage,
@@ -27,16 +27,18 @@ import {
 
 // ───────── Codex Auth ─────────
 
-export async function getCodexToken(ctx: Pick<UsageContext, "modelRegistry">): Promise<{ token: string; accountId: string } | undefined> {
+const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+
+export async function getCodexToken(ctx: Pick<UsageContext, "modelRegistry">): Promise<{ token: string; accountId: string; baseUrl: string } | undefined> {
 	const [credential, resolved] = await Promise.all([
 		readStoredCredential(OPENAI_CODEX_PROVIDER),
-		resolveProviderAuth(ctx, OPENAI_CODEX_PROVIDER),
+		resolveBoundProviderAuth(ctx, OPENAI_CODEX_PROVIDER),
 	]);
 	const token = resolved?.apiKey;
 	if (!token) return undefined;
 
 	const accountId = (credential as CodexOAuthCredential | undefined)?.accountId ?? extractAccountId(token);
-	return accountId ? { token, accountId } : undefined;
+	return accountId ? { token, accountId, baseUrl: resolved.baseUrl } : undefined;
 }
 
 // ───────── Window Helpers ─────────
@@ -64,9 +66,14 @@ export function windowResetAt(window: OpenAIUsageWindow | null | undefined): num
 
 // ───────── Codex Usage Check ─────────
 
-export async function checkCodexUsageFromUsageApi(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsageApiResult> {
+export async function checkCodexUsageFromUsageApi(
+	token: string,
+	accountId: string,
+	signal?: AbortSignal,
+	credentialBaseUrl = CODEX_BASE_URL,
+): Promise<CodexUsageApiResult> {
 	try {
-		const response = await fetchWithTimeout(OPENAI_USAGE_URL, {
+		const response = await fetchSameOriginWithTimeout(OPENAI_USAGE_URL, credentialBaseUrl, {
 			headers: {
 				"Authorization": `Bearer ${token}`,
 				"ChatGPT-Account-Id": accountId,
@@ -206,9 +213,17 @@ export function parseCodexUsageHeaders(
 
 // ───────── Probe Fallback ─────────
 
-async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsage> {
+export function resolveCodexProbeEndpoint(baseUrl: string): string {
+	const normalized = baseUrl.replace(/\/+$/, "");
+	if (normalized.endsWith("/codex/responses")) return normalized;
+	if (normalized.endsWith("/codex")) return `${normalized}/responses`;
+	return `${normalized}/codex/responses`;
+}
+
+async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal, credentialBaseUrl = CODEX_BASE_URL): Promise<CodexUsage> {
 	try {
-		const response = await fetchWithTimeout("https://chatgpt.com/backend-api/codex/responses", {
+		const endpoint = resolveCodexProbeEndpoint(credentialBaseUrl);
+		const response = await fetchSameOriginWithTimeout(endpoint, credentialBaseUrl, {
 			method: "POST",
 			headers: {
 				"Authorization": `Bearer ${token}`,
@@ -264,13 +279,18 @@ function applyResetsAtFromBody(usage: CodexUsage, body: string): void {
 
 // ───────── Public API ─────────
 
-export async function checkCodexUsage(token: string, accountId: string, signal?: AbortSignal): Promise<CodexUsage> {
-	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId, signal);
+export async function checkCodexUsage(
+	token: string,
+	accountId: string,
+	signal?: AbortSignal,
+	credentialBaseUrl = CODEX_BASE_URL,
+): Promise<CodexUsage> {
+	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId, signal, credentialBaseUrl);
 	if (usageApiResult.success || signal?.aborted) {
 		return usageApiResult.success ? usageApiResult.usage : { ...PROBE_ERROR_BASE, error: usageApiResult.error };
 	}
 
-	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal);
+	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal, credentialBaseUrl);
 	if (probeResult.error && !probeResult.rateLimited) {
 		probeResult.error = `${usageApiResult.error}; fallback probe: ${probeResult.error}`;
 	}

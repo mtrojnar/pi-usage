@@ -16,6 +16,7 @@ Compared with [timm-u/pi-usage](https://github.com/timm-u/pi-usage), this fork a
 
 - Private OpenCode Go quota config enforcement on POSIX systems (`0600`) before reading browser auth cookies.
 - Authentication and model discovery through pi v0.82's session-owned model registry, including provider-managed OAuth refresh and effective custom-provider base URLs.
+- Provider credentials are bound to their resolved HTTP origin; proactive probes reject cross-origin endpoints and all authenticated checks reject redirects.
 - Bounded response-body reads to reduce hang and memory-exhaustion risk.
 
 ### Functional Changes

@@ -15,6 +15,42 @@ export function piUsageUserAgent(): string {
 	return `pi-usage (${os.platform()} ${os.release()}; ${os.arch()})`;
 }
 
+/** Return the normalized origin of an absolute HTTP(S) URL. */
+export function httpOrigin(value: string): string | undefined {
+	try {
+		const url = new URL(value);
+		return url.protocol === "http:" || url.protocol === "https:" ? url.origin : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Whether two absolute HTTP(S) URLs have exactly the same origin. */
+export function isSameHttpOrigin(left: string, right: string): boolean {
+	const leftOrigin = httpOrigin(left);
+	return leftOrigin !== undefined && leftOrigin === httpOrigin(right);
+}
+
+function assertCredentialOrigin(url: string, credentialBaseUrl: string): void {
+	if (isSameHttpOrigin(url, credentialBaseUrl)) return;
+	const actual = httpOrigin(url) ?? "an invalid URL";
+	const expected = httpOrigin(credentialBaseUrl) ?? "an invalid credential origin";
+	throw new Error(`Refusing credentialed request to ${actual}; expected ${expected}`);
+}
+
+/**
+ * Fetch an endpoint only when it shares the credential's resolved origin.
+ * Redirects are rejected so credentials cannot escape after this check.
+ */
+export async function fetchSameOrigin(
+	url: string,
+	credentialBaseUrl: string,
+	init: RequestInit,
+): Promise<Response> {
+	assertCredentialOrigin(url, credentialBaseUrl);
+	return fetch(url, { ...init, redirect: "error" });
+}
+
 export function createTimeoutSignal(
 	ms: number,
 	parentSignal?: AbortSignal,
@@ -43,10 +79,21 @@ export function createTimeoutSignal(
 export async function fetchWithTimeout(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
 	const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 	try {
-		return await fetch(url, { ...init, signal: timeoutSignal.signal });
+		return await fetch(url, { ...init, redirect: "error", signal: timeoutSignal.signal });
 	} finally {
 		timeoutSignal.cleanup();
 	}
+}
+
+/** Same-origin credentialed fetch with the standard check timeout. */
+export async function fetchSameOriginWithTimeout(
+	url: string,
+	credentialBaseUrl: string,
+	init: RequestInit,
+	signal?: AbortSignal,
+): Promise<Response> {
+	assertCredentialOrigin(url, credentialBaseUrl);
+	return fetchWithTimeout(url, init, signal);
 }
 
 export async function readResponseText(response: Response, signal?: AbortSignal): Promise<string> {

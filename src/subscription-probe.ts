@@ -1,4 +1,5 @@
 import type {
+	BoundApiKey,
 	GoModelStatus,
 	SelectedModel,
 	SubscriptionProbeApi,
@@ -7,8 +8,9 @@ import type {
 	SubscriptionQuotaWindow,
 	UsageContext,
 } from "./types.ts";
-import { resolveProviderAuth } from "./auth.ts";
+import { resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent } from "./format.ts";
+import { fetchSameOrigin, isSameHttpOrigin } from "./http.ts";
 import {
 	hasHeaderPrefix,
 	headerValue,
@@ -45,15 +47,23 @@ const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "o
 
 // ───────── Auth Helpers ─────────
 
+export async function getSubscriptionAuth(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	config: SubscriptionProviderConfig,
+): Promise<BoundApiKey | undefined> {
+	for (const provider of config.authProviderIds ?? [config.provider]) {
+		const resolved = await resolveBoundProviderAuth(ctx, provider);
+		if (resolved) return resolved;
+	}
+	return undefined;
+}
+
+/** @deprecated Use getSubscriptionAuth() so the key remains bound to its origin. */
 export async function getSubscriptionApiKey(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	config: SubscriptionProviderConfig,
 ): Promise<string | undefined> {
-	for (const provider of config.authProviderIds ?? [config.provider]) {
-		const resolved = await resolveProviderAuth(ctx, provider);
-		if (resolved) return resolved.apiKey;
-	}
-	return undefined;
+	return (await getSubscriptionAuth(ctx, config))?.apiKey;
 }
 
 // ───────── Model Helpers ─────────
@@ -62,18 +72,22 @@ export async function getSubscriptionCheckModels(
 	config: SubscriptionProviderConfig,
 	preferredModel?: SelectedModel,
 	ctx?: Pick<UsageContext, "modelRegistry">,
+	credentialBaseUrl?: string,
 ): Promise<SubscriptionProbeModel[]> {
 	const allowedApis = new Set(config.supportedApis ?? DEFAULT_SUPPORTED_APIS);
 	const modelsById = new Map<string, SubscriptionProbeModel>();
-	for (const model of config.documentedModels ?? []) {
-		modelsById.set(model.id, model);
-	}
+	const addModel = (model: SubscriptionProbeModel): void => {
+		if ((!credentialBaseUrl || isSameHttpOrigin(model.endpoint, credentialBaseUrl)) && !modelsById.has(model.id)) {
+			modelsById.set(model.id, model);
+		}
+	};
+	for (const model of config.documentedModels ?? []) addModel(model);
 
 	const providerModels = ctx?.modelRegistry.getProvider(config.provider)?.getModels() ?? [];
 	for (const model of providerModels as readonly PiModelLike[]) {
 		const api = asProbeApi(model.api);
-		if (!api || !allowedApis.has(api) || modelsById.has(model.id)) continue;
-		modelsById.set(model.id, {
+		if (!api || !allowedApis.has(api)) continue;
+		addModel({
 			id: model.id,
 			api,
 			endpoint: resolveProbeEndpoint(model.baseUrl, api),
@@ -85,7 +99,7 @@ export async function getSubscriptionCheckModels(
 	// Prefer the currently selected model when it belongs to this provider.
 	const preferredApi = preferredModel?.provider === config.provider ? asProbeApi(preferredModel.api) : undefined;
 	if (preferredModel && preferredApi && allowedApis.has(preferredApi) && !modelsById.has(preferredModel.id)) {
-		modelsById.set(preferredModel.id, {
+		addModel({
 			id: preferredModel.id,
 			api: preferredApi,
 			endpoint: resolveProbeEndpoint(preferredModel.baseUrl, preferredApi),
@@ -266,7 +280,7 @@ export function isSubscriptionQuotaMessage(message: string): boolean {
 export async function checkSubscriptionProviderUsage(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	config: SubscriptionProviderConfig,
-	apiKey: string | undefined,
+	auth: BoundApiKey | undefined,
 	signal?: AbortSignal,
 	preferredModel?: SelectedModel,
 ): Promise<SubscriptionUsage> {
@@ -277,15 +291,15 @@ export async function checkSubscriptionProviderUsage(
 		available: false,
 		status: "no_key",
 	});
-	if (!apiKey) return emptyUsage();
+	if (!auth) return emptyUsage();
 
 	return probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
 		label: config.label,
-		models: await getSubscriptionCheckModels(config, preferredModel, ctx),
+		models: await getSubscriptionCheckModels(config, preferredModel, ctx, auth.baseUrl),
 		signal,
-		request: (model, probeSignal) => fetch(model.endpoint, {
+		request: (model, probeSignal) => fetchSameOrigin(model.endpoint, auth.baseUrl, {
 			method: "POST",
-			headers: probeHeaders(apiKey, model),
+			headers: probeHeaders(auth.apiKey, model),
 			body: JSON.stringify(probeBody(model)),
 			signal: probeSignal,
 		}),

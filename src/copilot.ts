@@ -13,8 +13,9 @@ import {
 	GITHUB_COPILOT_PROBE_MODEL,
 	GITHUB_COPILOT_PROVIDER,
 } from "./config.ts";
-import { readStoredCredential, resolveProviderAuth } from "./auth.ts";
+import { readStoredCredential, resolveProviderAuth, resolveProviderBaseUrl } from "./auth.ts";
 import { clampPercent } from "./format.ts";
+import { fetchSameOrigin } from "./http.ts";
 import {
 	hasHeaderPrefix,
 	headerValue,
@@ -101,10 +102,18 @@ export async function getCopilotAuth(ctx: Pick<UsageContext, "modelRegistry">): 
 	if (!resolved) return undefined;
 	const oauth = credential as CopilotOAuthCredential | undefined;
 	const enterpriseDomain = normalizeCopilotDomain(oauth?.enterpriseUrl);
+	const tokenBaseUrl = baseUrlFromToken(resolved.apiKey)
+		?? (enterpriseDomain ? `https://copilot-api.${enterpriseDomain}` : undefined);
+	const baseUrl = resolveProviderBaseUrl(
+		ctx,
+		GITHUB_COPILOT_PROVIDER,
+		resolved.baseUrl ?? tokenBaseUrl,
+	);
+	if (!baseUrl) return undefined;
 	return {
 		token: resolved.apiKey,
 		source: resolved.source ?? "pi auth",
-		baseUrl: resolved.baseUrl ?? getCopilotBaseUrl(resolved.apiKey, enterpriseDomain),
+		baseUrl,
 		enterpriseDomain,
 		availableModelIds: availableModelIds(oauth?.availableModelIds),
 	};
@@ -245,7 +254,7 @@ async function getCopilotCheckModels(ctx: Pick<UsageContext, "modelRegistry">, a
 		modelsById.set(model.id, {
 			id: model.id,
 			api,
-			endpoint: resolveProbeEndpoint(auth.baseUrl || model.baseUrl || COPILOT_API_BASE_URL, api),
+			endpoint: resolveProbeEndpoint(auth.baseUrl, api),
 			costRank: modelCostRank(model),
 		});
 	}
@@ -261,7 +270,7 @@ async function getCopilotCheckModels(ctx: Pick<UsageContext, "modelRegistry">, a
 		modelsById.set(preferredId, {
 			id: preferredId,
 			api: preferredApi,
-			endpoint: resolveProbeEndpoint(auth.baseUrl || preferredModel!.baseUrl || COPILOT_API_BASE_URL, preferredApi),
+			endpoint: resolveProbeEndpoint(auth.baseUrl, preferredApi),
 			costRank: -1,
 		});
 	}
@@ -334,7 +343,7 @@ export async function checkCopilotUsage(ctx: Pick<UsageContext, "modelRegistry">
 		label: "GitHub Copilot",
 		models: await getCopilotCheckModels(ctx, auth, preferredModel),
 		signal,
-		request: (model, probeSignal) => fetch(model.endpoint, {
+		request: (model, probeSignal) => fetchSameOrigin(model.endpoint, auth.baseUrl, {
 			method: "POST",
 			headers: copilotProbeHeaders(auth, model.api),
 			body: JSON.stringify(copilotProbeBody(model)),

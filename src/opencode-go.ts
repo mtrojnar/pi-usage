@@ -1,4 +1,5 @@
 import type {
+	BoundApiKey,
 	GoCheckModel,
 	OpenCodeGoQuotaConfig,
 	OpenCodeGoQuotaConfigState,
@@ -13,7 +14,7 @@ import { clampPercent, errorText, truncate } from "./format.ts";
 import { cancelResponseBody, fetchWithTimeout, piUsageUserAgent, readResponseText } from "./http.ts";
 import {
 	checkSubscriptionProviderUsage,
-	getSubscriptionApiKey,
+	getSubscriptionAuth,
 	parseQuotaWindow,
 	parseSubscriptionUsageHeaders,
 	QUOTA_WINDOW_KINDS,
@@ -54,8 +55,13 @@ const GO_QUOTA_HEADER_PREFIXES = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes
 
 // ───────── Auth Helpers ─────────
 
-export function getOpenCodeApiKey(ctx: Pick<UsageContext, "modelRegistry">): Promise<string | undefined> {
-	return getSubscriptionApiKey(ctx, OPENCODE_GO_PROVIDER_CONFIG);
+export function getOpenCodeAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<BoundApiKey | undefined> {
+	return getSubscriptionAuth(ctx, OPENCODE_GO_PROVIDER_CONFIG);
+}
+
+/** @deprecated Use getOpenCodeAuth() so the key remains bound to its origin. */
+export async function getOpenCodeApiKey(ctx: Pick<UsageContext, "modelRegistry">): Promise<string | undefined> {
+	return (await getOpenCodeAuth(ctx))?.apiKey;
 }
 
 // ───────── Dashboard Quota Parsing ─────────
@@ -201,7 +207,7 @@ function quotaFields(quota: OpenCodeGoQuotaResult): Partial<OpenCodeGoUsage> {
 
 export async function checkOpenCodeGoUsage(
 	ctx: Pick<UsageContext, "modelRegistry">,
-	apiKey: string | undefined,
+	auth: BoundApiKey | undefined,
 	configState: OpenCodeGoQuotaConfigState,
 	signal?: AbortSignal,
 	preferredModel?: SelectedModel,
@@ -224,6 +230,6 @@ export async function checkOpenCodeGoUsage(
 		return { ...goIdentity(), available: false, status: "error", error: "OpenCode Go check aborted" };
 	}
 
-	const modelCheck = await checkSubscriptionProviderUsage(ctx, OPENCODE_GO_PROVIDER_CONFIG, apiKey, signal, preferredModel);
+	const modelCheck = await checkSubscriptionProviderUsage(ctx, OPENCODE_GO_PROVIDER_CONFIG, auth, signal, preferredModel);
 	return { ...modelCheck, ...quotaFields(quota), quotaError: quota.error };
 }

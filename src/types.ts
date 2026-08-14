@@ -32,10 +32,18 @@ export type GoProbeApi = Extract<SubscriptionProbeApi, "openai-completions" | "a
 
 export type AnthropicAuthType = "oauth" | "api_key";
 
+/** API key paired with the provider base URL it was resolved for. */
+export interface BoundApiKey {
+	apiKey: string;
+	baseUrl: string;
+	source?: string;
+}
+
 export interface AnthropicAuth {
 	token: string;
 	type: AnthropicAuthType;
 	source: string;
+	baseUrl: string;
 }
 
 export interface AuthApiKeyCredential {

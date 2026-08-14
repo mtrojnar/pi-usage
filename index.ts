@@ -43,7 +43,7 @@ import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } fro
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
 import {
 	checkOpenCodeGoUsage,
-	getOpenCodeApiKey,
+	getOpenCodeAuth,
 	getOpenCodeGoQuotaHeaderWindows,
 	hasCompleteGoQuotaData,
 	parseOpenCodeGoUsageHeaders,
@@ -51,7 +51,7 @@ import {
 } from "./src/opencode-go.ts";
 import {
 	checkSubscriptionProviderUsage,
-	getSubscriptionApiKey,
+	getSubscriptionAuth,
 	parseSubscriptionUsageHeaders,
 	QUOTA_WINDOW_KINDS,
 	type QuotaWindowKind,
@@ -293,7 +293,7 @@ export default function (pi: ExtensionAPI) {
 
 				codexUsageRequestAt = Date.now();
 				codexResponseCleanTicks = 0;
-				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal);
+				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal, codexAuth.baseUrl);
 				if (result.success && !controller.signal.aborted && generation === sessionGeneration) {
 					const usage = passiveHeaderRevision(OPENAI_CODEX_PROVIDER) === passiveRevision
 						? result.usage
@@ -380,7 +380,7 @@ export default function (pi: ExtensionAPI) {
 				codexResponseCleanTicks = 0;
 				runCheck(
 					OPENAI_CODEX_PROVIDER,
-					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal),
+					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal, codexAuth.baseUrl),
 					() => codexUsage,
 					CODEX_REFRESH_FIELDS,
 					(result) => { codexUsage = normalizeCodexResetTimes(result); },
@@ -426,11 +426,11 @@ export default function (pi: ExtensionAPI) {
 				&& passiveUpdateIsFresh(OPENCODE_GO_PROVIDER)
 				&& (!goQuotaState.config || goQuotaUpdateIsFresh())
 				&& !goQuotaState.error;
-			const goKey = skipGoCheck ? undefined : await getOpenCodeApiKey(ctx);
-			if (!skipGoCheck && (goKey || goQuotaState.config || goQuotaState.error)) {
+			const goAuth = skipGoCheck ? undefined : await getOpenCodeAuth(ctx);
+			if (!skipGoCheck && (goAuth || goQuotaState.config || goQuotaState.error)) {
 				runCheck(
 					OPENCODE_GO_PROVIDER,
-					checkOpenCodeGoUsage(ctx, goKey, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
+					checkOpenCodeGoUsage(ctx, goAuth, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
 					() => goUsage,
 					GO_REFRESH_FIELDS,
 					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
@@ -444,14 +444,14 @@ export default function (pi: ExtensionAPI) {
 			// Check other OpenAI/Anthropic-compatible subscription providers.
 			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
 				if (trigger === "auto" && passiveUpdateIsFresh(providerConfig.provider)) continue;
-				const apiKey = await getSubscriptionApiKey(ctx, providerConfig);
-				if (!apiKey) {
+				const providerAuth = await getSubscriptionAuth(ctx, providerConfig);
+				if (!providerAuth) {
 					subscriptionUsages.delete(providerConfig.provider);
 					continue;
 				}
 				runCheck(
 					providerConfig.provider,
-					checkSubscriptionProviderUsage(ctx, providerConfig, apiKey, signal, preferredFor(providerConfig.provider)),
+					checkSubscriptionProviderUsage(ctx, providerConfig, providerAuth, signal, preferredFor(providerConfig.provider)),
 					() => subscriptionUsages.get(providerConfig.provider),
 					SUBSCRIPTION_REFRESH_FIELDS,
 					(result) => {

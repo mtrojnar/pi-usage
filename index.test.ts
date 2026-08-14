@@ -51,10 +51,12 @@ import {
 } from "./src/codex.ts";
 import {
 	cancelResponseBody,
+	fetchSameOrigin,
+	isSameHttpOrigin,
 	readResponseText,
 } from "./src/http.ts";
 import { mergeConcurrentFields } from "./src/concurrent.ts";
-import { readStoredCredential } from "./src/auth.ts";
+import { readStoredCredential, resolveBoundProviderAuth } from "./src/auth.ts";
 import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
@@ -71,6 +73,7 @@ import {
 	usageHasData,
 } from "./src/render.ts";
 import {
+	checkAnthropicUsage,
 	checkAnthropicUsageFromUsageApi,
 	isAnthropicModelUnavailable,
 	parseAnthropicUsageHeaders,
@@ -105,6 +108,7 @@ import type {
 	CopilotUsage,
 	OpenCodeGoUsage,
 	SubscriptionUsage,
+	UsageContext,
 } from "./src/types.ts";
 
 // ───────── Test Fixtures ─────────
@@ -746,6 +750,118 @@ describe("resolveProbeEndpoint", () => {
 	});
 });
 
+// ───────── Credential origin enforcement ─────────
+
+describe("credential origin enforcement", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => { globalThis.fetch = realFetch; });
+
+	it("compares normalized HTTP origins", () => {
+		assert.equal(isSameHttpOrigin("https://api.example.com/v1", "https://API.example.com:443/root"), true);
+		assert.equal(isSameHttpOrigin("https://api.example.com", "http://api.example.com"), false);
+		assert.equal(isSameHttpOrigin("data:text/plain,test", "data:text/plain,other"), false);
+	});
+
+	it("rejects a cross-origin credentialed request before fetch", async () => {
+		let called = false;
+		globalThis.fetch = (async () => {
+			called = true;
+			return new Response();
+		}) as typeof fetch;
+
+		await assert.rejects(
+			fetchSameOrigin("https://unrelated.example/v1/messages", "https://proxy.example/api", {
+				headers: { "x-api-key": "secret" },
+			}),
+			/Refusing credentialed request/,
+		);
+		assert.equal(called, false);
+	});
+
+	it("forces redirect rejection on an allowed request", async () => {
+		let requestInit: RequestInit | undefined;
+		globalThis.fetch = (async (_url, init) => {
+			requestInit = init;
+			return new Response();
+		}) as typeof fetch;
+
+		await fetchSameOrigin("https://proxy.example/v1/messages", "https://proxy.example/api", {
+			redirect: "follow",
+			headers: { "x-api-key": "secret" },
+		});
+		assert.equal(requestInit?.redirect, "error");
+	});
+
+	it("binds a resolved key to the provider's effective base URL", async () => {
+		const ctx = {
+			modelRegistry: {
+				getProviderAuth: async () => ({ auth: { apiKey: "proxy-key" }, source: "test" }),
+				getProvider: () => ({ baseUrl: "https://proxy.example/anthropic", getModels: () => [] }),
+			},
+		} as unknown as Pick<UsageContext, "modelRegistry">;
+
+		assert.deepEqual(await resolveBoundProviderAuth(ctx, "anthropic"), {
+			apiKey: "proxy-key",
+			baseUrl: "https://proxy.example/anthropic",
+			source: "test",
+		});
+	});
+
+	it("does not bind a provider key when catalog models span origins without a provider base URL", async () => {
+		const ctx = {
+			modelRegistry: {
+				getProviderAuth: async () => ({ auth: { apiKey: "ambiguous-key" } }),
+				getProvider: () => ({
+					getModels: () => [
+						{ baseUrl: "https://one.example/v1" },
+						{ baseUrl: "https://two.example/v1" },
+					],
+				}),
+			},
+		} as unknown as Pick<UsageContext, "modelRegistry">;
+
+		assert.equal(await resolveBoundProviderAuth(ctx, "custom"), undefined);
+	});
+
+	it("probes a custom Anthropic proxy without sending its key to official or selected foreign origins", async () => {
+		const requests: Array<{ url: string; init?: RequestInit }> = [];
+		globalThis.fetch = (async (url, init) => {
+			requests.push({ url: String(url), init });
+			return new Response(null, { status: 200 });
+		}) as typeof fetch;
+		const ctx = {
+			modelRegistry: {
+				getProvider: () => ({
+					getModels: () => [{
+						id: "foreign-model",
+						api: "anthropic-messages",
+						baseUrl: "https://unrelated.example",
+						cost: {},
+					}],
+				}),
+			},
+		} as unknown as Pick<UsageContext, "modelRegistry">;
+
+		const usage = await checkAnthropicUsage(ctx, {
+			token: "proxy-key",
+			type: "api_key",
+			source: "test",
+			baseUrl: "https://proxy.example/anthropic",
+		}, undefined, {
+			provider: "anthropic",
+			id: "foreign-model",
+			api: "anthropic-messages",
+			baseUrl: "https://unrelated.example",
+		});
+
+		assert.equal(usage.status, "available");
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0].url, "https://proxy.example/anthropic/v1/messages");
+		assert.equal((requests[0].init?.headers as Record<string, string>)["x-api-key"], "proxy-key");
+		assert.equal(requests[0].init?.redirect, "error");
+	});
+});
+
 // ───────── resolveConfigValue ─────────
 
 describe("resolveConfigValue", () => {
@@ -911,6 +1027,22 @@ describe("checkCodexUsageFromUsageApi", () => {
 		assert.doesNotMatch(rendered, /168h/);
 		assert.doesNotMatch(rendered, /week.*0%/);
 	});
+
+	it("does not send a proxy-bound token to the official usage endpoint", async () => {
+		let called = false;
+		globalThis.fetch = (async () => {
+			called = true;
+			return new Response();
+		}) as typeof fetch;
+		const result = await checkCodexUsageFromUsageApi(
+			"token",
+			"account",
+			undefined,
+			"https://proxy.example/backend-api",
+		);
+		assert.equal(result.success, false);
+		assert.equal(called, false);
+	});
 });
 
 describe("parseAnthropicUsageHeaders", () => {
@@ -1005,6 +1137,17 @@ describe("checkAnthropicUsageFromUsageApi", () => {
 		globalThis.fetch = (async () => new Response("nope", { status: 403 })) as typeof fetch;
 		const r = await checkAnthropicUsageFromUsageApi("tok");
 		assert.equal(r.success, false);
+	});
+
+	it("does not send a proxy-bound token to the official usage endpoint", async () => {
+		let called = false;
+		globalThis.fetch = (async () => {
+			called = true;
+			return new Response();
+		}) as typeof fetch;
+		const r = await checkAnthropicUsageFromUsageApi("tok", undefined, "https://proxy.example/anthropic");
+		assert.equal(r.success, false);
+		assert.equal(called, false);
 	});
 });
 
@@ -1174,6 +1317,24 @@ describe("getSubscriptionCheckModels", () => {
 		});
 		assert.ok(!models.some((m) => m.id === "totally-foreign-model"));
 		assert.equal(models[0].id, "big-pickle");
+	});
+
+	it("keeps only endpoints on the origin bound to the key", async () => {
+		const ctx = {
+			modelRegistry: {
+				getProvider: () => ({
+					getModels: () => [{
+						id: "big-pickle",
+						api: "openai-completions",
+						baseUrl: "https://proxy.example/zen/v1",
+						cost: {},
+					}],
+				}),
+			},
+		} as unknown as Pick<UsageContext, "modelRegistry">;
+		const models = await getSubscriptionCheckModels(config, undefined, ctx, "https://proxy.example/zen");
+
+		assert.deepEqual(models.map((model) => model.endpoint), ["https://proxy.example/zen/v1/chat/completions"]);
 	});
 });
 
