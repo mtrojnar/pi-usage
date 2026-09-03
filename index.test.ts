@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, mock } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -55,7 +55,7 @@ import {
 	isSameHttpOrigin,
 	readResponseText,
 } from "./src/http.ts";
-import { mergeConcurrentFields } from "./src/concurrent.ts";
+import { mergeConcurrentFields, runIsolatedTask } from "./src/concurrent.ts";
 import { readStoredCredential, resolveBoundProviderAuth } from "./src/auth.ts";
 import {
 	buildStartupUsageMessage,
@@ -102,6 +102,7 @@ import {
 	parseSubscriptionUsageHeaders,
 	type SubscriptionProviderConfig,
 } from "./src/subscription-probe.ts";
+import usageExtension from "./index.ts";
 import type {
 	AnthropicUsage,
 	CodexUsage,
@@ -173,6 +174,132 @@ describe("readStoredCredential", () => {
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+});
+
+// ───────── Refresh orchestration ─────────
+
+describe("usage refresh orchestration", () => {
+	it("renders a completed provider while another provider's auth times out", async () => {
+		mock.timers.enable({ apis: ["setTimeout"] });
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const previousFetch = globalThis.fetch;
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-usage-refresh-"));
+		let commandHandler: ((args: string, ctx: UsageContext) => Promise<void>) | undefined;
+		const widgets: string[][] = [];
+		const notifications: string[] = [];
+		const zaiBaseUrl = "https://api.z.ai/v1";
+
+		try {
+			process.env.PI_CODING_AGENT_DIR = tempDir;
+			globalThis.fetch = mock.fn(async () => new Response(null, { status: 200 }));
+
+			const pi = {
+				registerFlag: () => {},
+				getFlag: (name: string) => name === "usage-widget",
+				on: () => {},
+				registerCommand: (name: string, command: { handler: typeof commandHandler }) => {
+					if (name === "usage") commandHandler = command.handler;
+				},
+			};
+			usageExtension(pi as any);
+			assert.ok(commandHandler);
+
+			const ctx = {
+				hasUI: true,
+				cwd: tempDir,
+				ui: {
+					theme: {
+						fg: (_color: string, text: string) => text,
+						bold: (text: string) => text,
+					},
+					setWidget: (_id: string, lines: string[] | undefined) => {
+						if (lines) widgets.push(lines);
+					},
+					setStatus: () => {},
+					notify: (message: string) => { notifications.push(message); },
+				},
+				modelRegistry: {
+					getProviderAuth: (provider: string) => {
+						if (provider === "kimi-coding") return new Promise(() => {});
+						if (provider === "zai") {
+							return Promise.resolve({ auth: { apiKey: "zai-key", baseUrl: zaiBaseUrl }, source: "test" });
+						}
+						return Promise.resolve(undefined);
+					},
+					getProvider: (provider: string) => provider === "zai"
+						? {
+							baseUrl: zaiBaseUrl,
+							getModels: () => [{
+								id: "glm-test",
+								api: "openai-completions",
+								baseUrl: zaiBaseUrl,
+								cost: { input: 1, output: 1 },
+							}],
+						}
+						: undefined,
+				},
+				isProjectTrusted: () => false,
+			} as any as UsageContext;
+
+			const refresh = commandHandler("", ctx);
+			for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+			const partialWidget = widgets.at(-1)?.join("\n") ?? "";
+			assert.match(partialWidget, /Z\.AI/);
+			assert.match(partialWidget, /Checking usage limits/);
+
+			mock.timers.tick(30_000);
+			await refresh;
+
+			const finalWidget = widgets.at(-1)?.join("\n") ?? "";
+			assert.match(finalWidget, /Z\.AI/);
+			assert.doesNotMatch(finalWidget, /Checking usage limits/);
+			assert.ok(notifications.includes("Some usage checks timed out"));
+		} finally {
+			mock.timers.reset();
+			globalThis.fetch = previousFetch;
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
+// ───────── Provider task isolation ─────────
+
+describe("runIsolatedTask", () => {
+	it("lets a fast provider complete when a peer times out", async () => {
+		let slowAborted = false;
+		const slow = runIsolatedTask(async (signal) => {
+			signal.addEventListener("abort", () => { slowAborted = true; }, { once: true });
+			return new Promise<string>(() => {});
+		}, 10);
+		const fast = runIsolatedTask(async () => "available", 100);
+
+		const [slowResult, fastResult] = await Promise.all([slow, fast]);
+		assert.deepEqual(slowResult, { status: "timed_out" });
+		assert.deepEqual(fastResult, { status: "fulfilled", value: "available" });
+		assert.equal(slowAborted, true);
+	});
+
+	it("distinguishes parent cancellation from a provider timeout", async () => {
+		const parent = new AbortController();
+		parent.abort();
+		let started = false;
+		const result = await runIsolatedTask(async () => {
+			started = true;
+			return "unused";
+		}, 100, parent.signal);
+
+		assert.deepEqual(result, { status: "aborted" });
+		assert.equal(started, false);
+	});
+
+	it("captures provider rejection without rejecting the coordinator", async () => {
+		const error = new Error("provider failed");
+		const result = await runIsolatedTask(async () => { throw error; }, 100);
+		assert.deepEqual(result, { status: "rejected", reason: error });
 	});
 });
 
@@ -2091,6 +2218,19 @@ describe("buildUsageWidget", () => {
 	it("renders loading state", () => {
 		const result = buildUsageWidget({ subscriptions: [] }, mockTheme, true);
 		assert.match(widgetText(result), /Checking usage limits/);
+	});
+
+	it("keeps completed providers visible while remaining checks load", () => {
+		const subscription: SubscriptionUsage = {
+			provider: "zai",
+			label: "Z.AI",
+			shortLabel: "Z.AI",
+			available: true,
+			status: "available",
+		};
+		const result = widgetText(buildUsageWidget({ subscriptions: [subscription] }, mockTheme, true));
+		assert.match(result, /Z\.AI/);
+		assert.match(result, /Checking usage limits/);
 	});
 
 	it("renders with both services configured", () => {

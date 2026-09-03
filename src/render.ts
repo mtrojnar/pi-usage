@@ -294,15 +294,16 @@ function buildUsageReportLines(snapshot: UsageSnapshot, opts: UsageReportOptions
 // ───────── Widget ─────────
 
 export function buildUsageWidget(snapshot: UsageSnapshot, theme: Theme, loading: boolean): string[] {
-	if (loading) {
-		return [theme.fg("muted", "⚡ Checking usage limits...")];
-	}
-
-	return buildUsageReportLines(snapshot, {
+	const lines = buildUsageReportLines(snapshot, {
 		fmt: (color, text) => theme.fg(color, text),
 		bold: (text) => theme.bold(text),
 		useColor: true,
 	});
+	if (loading) {
+		lines.push(theme.fg("dim", DIVIDER));
+		lines.push(theme.fg("muted", "⚡ Checking usage limits..."));
+	}
+	return lines;
 }
 
 // ───────── Startup Message ─────────

@@ -37,7 +37,7 @@ import {
 } from "./src/config.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
 import { unrefTimer } from "./src/http.ts";
-import { mergeConcurrentFields } from "./src/concurrent.ts";
+import { mergeConcurrentFields, runIsolatedTask } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
 import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
 import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
@@ -320,11 +320,6 @@ export default function (pi: ExtensionAPI) {
 		const generation = sessionGeneration;
 		const controller = new AbortController();
 		let refreshTimedOut = false;
-		const refreshTimeout = setTimeout(() => {
-			refreshTimedOut = true;
-			controller.abort();
-		}, CHECK_TIMEOUT_MS * 2);
-		unrefTimer(refreshTimeout);
 		refreshController = controller;
 
 		try {
@@ -339,31 +334,43 @@ export default function (pi: ExtensionAPI) {
 			const checks: Promise<void>[] = [];
 			const signal = controller.signal;
 
-			// Run a check in parallel. If passive headers arrive first, preserve their
-			// status while still accepting independently refreshed quota fields.
+			// Resolve auth and check each provider behind an independent deadline. A
+			// stalled auth resolver or request must not delay or cancel its peers.
 			const runCheck = <T extends object>(
 				provider: string,
-				check: Promise<T>,
+				check: (providerSignal: AbortSignal) => Promise<T | undefined>,
 				current: () => T | undefined,
 				refreshFields: readonly (keyof T)[],
 				apply: (result: T) => void,
 				resultIsAuthoritative: (result: T) => boolean,
 				reconcileResult?: (result: T, merged: T) => T,
+				onUnavailable?: () => void,
 			): void => {
 				const passiveRevision = passiveHeaderRevision(provider);
 				const before = current();
-				checks.push(check.then((result) => {
+				checks.push(runIsolatedTask(check, CHECK_TIMEOUT_MS * 2, signal).then((outcome) => {
 					if (signal.aborted || generation !== sessionGeneration) return;
-					const merged = passiveHeaderRevision(provider) === passiveRevision
-						? result
-						: mergeConcurrentFields(
-							result,
-							before,
-							current(),
-							refreshFields,
-							resultIsAuthoritative(result),
-						);
-					apply(reconcileResult ? reconcileResult(result, merged) : merged);
+					if (outcome.status === "timed_out") {
+						refreshTimedOut = true;
+					} else if (outcome.status === "fulfilled") {
+						const result = outcome.value;
+						if (!result) {
+							onUnavailable?.();
+						} else {
+							const merged = passiveHeaderRevision(provider) === passiveRevision
+								? result
+								: mergeConcurrentFields(
+									result,
+									before,
+									current(),
+									refreshFields,
+									resultIsAuthoritative(result),
+								);
+							apply(reconcileResult ? reconcileResult(result, merged) : merged);
+						}
+					}
+					// Expose completed providers while slower checks are still running.
+					renderCachedUsage(ctx, widgetLoading);
 				}));
 			};
 
@@ -374,13 +381,16 @@ export default function (pi: ExtensionAPI) {
 			// Check Codex; activity scheduler or recent passive headers defer auto probes.
 			const skipCodexCheck = trigger === "auto"
 				&& (CODEX_RESPONSE_REFRESH_ENABLED || passiveUpdateIsFresh(OPENAI_CODEX_PROVIDER) || recentCodexUsageRequest());
-			const codexAuth = skipCodexCheck ? undefined : await getCodexToken(ctx);
-			if (codexAuth) {
-				codexUsageRequestAt = Date.now();
-				codexResponseCleanTicks = 0;
+			if (!skipCodexCheck) {
 				runCheck(
 					OPENAI_CODEX_PROVIDER,
-					checkCodexUsage(codexAuth.token, codexAuth.accountId, signal, codexAuth.baseUrl),
+					async (providerSignal) => {
+						const codexAuth = await getCodexToken(ctx);
+						if (!codexAuth || providerSignal.aborted) return undefined;
+						codexUsageRequestAt = Date.now();
+						codexResponseCleanTicks = 0;
+						return checkCodexUsage(codexAuth.token, codexAuth.accountId, providerSignal, codexAuth.baseUrl);
+					},
 					() => codexUsage,
 					CODEX_REFRESH_FIELDS,
 					(result) => { codexUsage = normalizeCodexResetTimes(result); },
@@ -390,34 +400,42 @@ export default function (pi: ExtensionAPI) {
 
 			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
 			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(ANTHROPIC_PROVIDER);
-			const anthropicAuth = skipAnthropicCheck ? undefined : await getAnthropicAuth(ctx);
-			if (anthropicAuth) {
+			if (!skipAnthropicCheck) {
 				runCheck(
 					ANTHROPIC_PROVIDER,
-					checkAnthropicUsage(ctx, anthropicAuth, signal, selected),
+					async (providerSignal) => {
+						const anthropicAuth = await getAnthropicAuth(ctx);
+						return anthropicAuth && !providerSignal.aborted
+							? checkAnthropicUsage(ctx, anthropicAuth, providerSignal, selected)
+							: undefined;
+					},
 					() => anthropicUsage,
 					ANTHROPIC_REFRESH_FIELDS,
 					(result) => { anthropicUsage = normalizeAnthropicResetTimes(result); },
 					probeRefreshIsAuthoritative,
+					undefined,
+					() => { anthropicUsage = undefined; },
 				);
-			} else if (!skipAnthropicCheck) {
-				anthropicUsage = undefined;
 			}
 
 			// Check GitHub Copilot; recent passive headers defer auto probes.
 			const skipCopilotCheck = trigger === "auto" && passiveUpdateIsFresh(GITHUB_COPILOT_PROVIDER);
-			const copilotAuth = skipCopilotCheck ? undefined : await getCopilotAuth(ctx);
-			if (copilotAuth) {
+			if (!skipCopilotCheck) {
 				runCheck(
 					GITHUB_COPILOT_PROVIDER,
-					checkCopilotUsage(ctx, copilotAuth, signal, selected),
+					async (providerSignal) => {
+						const copilotAuth = await getCopilotAuth(ctx);
+						return copilotAuth && !providerSignal.aborted
+							? checkCopilotUsage(ctx, copilotAuth, providerSignal, selected)
+							: undefined;
+					},
 					() => copilotUsage,
 					COPILOT_REFRESH_FIELDS,
 					(result) => { copilotUsage = normalizeCopilotResetTimes(result); },
 					probeRefreshIsAuthoritative,
+					undefined,
+					() => { copilotUsage = undefined; },
 				);
-			} else if (!skipCopilotCheck) {
-				copilotUsage = undefined;
 			}
 
 			// Check OpenCode Go; passive model headers can defer probes, but dashboard quota still needs proactive fetches.
@@ -426,32 +444,34 @@ export default function (pi: ExtensionAPI) {
 				&& passiveUpdateIsFresh(OPENCODE_GO_PROVIDER)
 				&& (!goQuotaState.config || goQuotaUpdateIsFresh())
 				&& !goQuotaState.error;
-			const goAuth = skipGoCheck ? undefined : await getOpenCodeAuth(ctx);
-			if (!skipGoCheck && (goAuth || goQuotaState.config || goQuotaState.error)) {
+			if (!skipGoCheck) {
 				runCheck(
 					OPENCODE_GO_PROVIDER,
-					checkOpenCodeGoUsage(ctx, goAuth, goQuotaState, signal, preferredFor(OPENCODE_GO_PROVIDER)),
+					async (providerSignal) => {
+						const goAuth = await getOpenCodeAuth(ctx);
+						if (providerSignal.aborted || (!goAuth && !goQuotaState.config && !goQuotaState.error)) return undefined;
+						return checkOpenCodeGoUsage(ctx, goAuth, goQuotaState, providerSignal, preferredFor(OPENCODE_GO_PROVIDER));
+					},
 					() => goUsage,
 					GO_REFRESH_FIELDS,
 					(result) => { goUsage = normalizeSubscriptionResetTimes(result); },
 					probeRefreshIsAuthoritative,
 					reconcileOpenCodeGoRefresh,
+					() => { goUsage = undefined; },
 				);
-			} else if (!skipGoCheck) {
-				goUsage = undefined;
 			}
 
 			// Check other OpenAI/Anthropic-compatible subscription providers.
 			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
 				if (trigger === "auto" && passiveUpdateIsFresh(providerConfig.provider)) continue;
-				const providerAuth = await getSubscriptionAuth(ctx, providerConfig);
-				if (!providerAuth) {
-					subscriptionUsages.delete(providerConfig.provider);
-					continue;
-				}
 				runCheck(
 					providerConfig.provider,
-					checkSubscriptionProviderUsage(ctx, providerConfig, providerAuth, signal, preferredFor(providerConfig.provider)),
+					async (providerSignal) => {
+						const providerAuth = await getSubscriptionAuth(ctx, providerConfig);
+						return providerAuth && !providerSignal.aborted
+							? checkSubscriptionProviderUsage(ctx, providerConfig, providerAuth, providerSignal, preferredFor(providerConfig.provider))
+							: undefined;
+					},
 					() => subscriptionUsages.get(providerConfig.provider),
 					SUBSCRIPTION_REFRESH_FIELDS,
 					(result) => {
@@ -462,6 +482,8 @@ export default function (pi: ExtensionAPI) {
 						}
 					},
 					probeRefreshIsAuthoritative,
+					undefined,
+					() => { subscriptionUsages.delete(providerConfig.provider); },
 				);
 			}
 
@@ -472,15 +494,14 @@ export default function (pi: ExtensionAPI) {
 			// Update display with results.
 			widgetLoading = false;
 			renderCachedUsage(ctx, false);
-			if (signal.aborted) {
-				if (refreshTimedOut && trigger !== "auto") ctx.ui.notify("Usage check timed out", "warning");
-				return;
+			if (signal.aborted) return;
+			if (refreshTimedOut && trigger !== "auto") {
+				ctx.ui.notify("Some usage checks timed out", "warning");
 			}
 			if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
 				ctx.ui.notify(buildStartupUsageMessage(currentSnapshot(), true), "info");
 			}
 		} finally {
-			clearTimeout(refreshTimeout);
 			if (refreshController === controller) refreshController = undefined;
 			widgetLoading = false;
 			isLoading = false;
