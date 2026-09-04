@@ -1,5 +1,3 @@
-import { unrefTimer } from "./http.ts";
-
 export type IsolatedTaskResult<T> =
 	| { status: "fulfilled"; value: T }
 	| { status: "rejected"; reason: unknown }
@@ -41,7 +39,6 @@ export function runIsolatedTask<T>(
 			controller.abort();
 			finish({ status: "timed_out" });
 		}, timeoutMs);
-		unrefTimer(timeout);
 
 		Promise.resolve()
 			.then(() => task(controller.signal))
