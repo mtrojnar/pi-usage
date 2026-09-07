@@ -219,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 	let codexResponseCleanTicks = 0;
 	let codexUsageRequestAt = 0;
 	let sessionGeneration = 0;
-	let expiredRefreshAt = 0;
+	const expiredRefreshAt = new Map<string, number>();
 
 	// Quota freshness defers auto checks; every parsed state update advances the
 	// revision so in-flight checks cannot overwrite newer availability changes.
@@ -245,12 +245,20 @@ export default function (pi: ExtensionAPI) {
 			&& QUOTA_WINDOW_KINDS.every((window) => passiveUpdateIsFresh(goQuotaPassiveKey(window)));
 	}
 
-	/** Cached windows past their reset time need a proactive refresh. */
-	function expiredWindowsNeedRefresh(): boolean {
-		if (subscriptionHasExpiredWindows(goUsage)) return true;
-		if ([anthropicUsage?.fiveHour, anthropicUsage?.weekly].some(quotaWindowIsExpired)) return true;
-		if ([copilotUsage?.requests, copilotUsage?.premiumRequests].some(quotaWindowIsExpired)) return true;
-		return subscriptionUsageList().some(subscriptionHasExpiredWindows);
+	/** Return only providers whose expired windows are due for another check. */
+	function expiredProvidersNeedingRefresh(now: number): Set<string> {
+		const providers = new Set<string>();
+		if (subscriptionHasExpiredWindows(goUsage)) providers.add(OPENCODE_GO_PROVIDER);
+		if ([anthropicUsage?.fiveHour, anthropicUsage?.weekly].some(quotaWindowIsExpired)) providers.add(ANTHROPIC_PROVIDER);
+		if ([copilotUsage?.requests, copilotUsage?.premiumRequests].some(quotaWindowIsExpired)) providers.add(GITHUB_COPILOT_PROVIDER);
+		for (const usage of subscriptionUsageList()) {
+			if (subscriptionHasExpiredWindows(usage)) providers.add(usage.provider);
+		}
+		for (const provider of providers) {
+			const at = expiredRefreshAt.get(provider);
+			if (at !== undefined && now - at < EXPIRED_REFRESH_DEBOUNCE_MS) providers.delete(provider);
+		}
+		return providers;
 	}
 
 	function isUsageWidgetEnabled(ctx: UsageContext): boolean {
@@ -328,7 +336,11 @@ export default function (pi: ExtensionAPI) {
 		})();
 	}
 
-	async function refreshUsage(ctx: UsageContext, trigger: RefreshTrigger = "manual"): Promise<void> {
+	async function refreshUsage(
+		ctx: UsageContext,
+		trigger: RefreshTrigger = "manual",
+		providers?: ReadonlySet<string>,
+	): Promise<void> {
 		if (!ctx.hasUI) return;
 		if (isLoading) {
 			if (trigger !== "auto") ctx.ui.notify("Usage check already in progress", "info");
@@ -364,6 +376,7 @@ export default function (pi: ExtensionAPI) {
 				reconcileResult?: (result: T, merged: T) => T,
 				onUnavailable?: () => void,
 			): void => {
+				if (providers && !providers.has(provider)) return;
 				const passiveRevision = passiveHeaderRevision(provider);
 				const before = current();
 				checks.push(runIsolatedTask(check, CHECK_TIMEOUT_MS * 2, signal).then((outcome) => {
@@ -552,11 +565,12 @@ export default function (pi: ExtensionAPI) {
 
 			// A window past its reset time shows stale data; refresh promptly
 			// (debounced) instead of waiting for the next auto refresh tick.
-			if (PROACTIVE_REFRESH_ENABLED && !isLoading && expiredWindowsNeedRefresh()) {
+			if (PROACTIVE_REFRESH_ENABLED && !isLoading) {
 				const now = Date.now();
-				if (now - expiredRefreshAt >= EXPIRED_REFRESH_DEBOUNCE_MS) {
-					expiredRefreshAt = now;
-					refreshUsage(ctx, "auto").catch(() => {});
+				const providers = expiredProvidersNeedingRefresh(now);
+				if (providers.size > 0) {
+					for (const provider of providers) expiredRefreshAt.set(provider, now);
+					refreshUsage(ctx, "auto", providers).catch(() => {});
 				}
 			}
 		}, UI_REFRESH_SECONDS * 1000);
@@ -662,6 +676,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Startup check + auto-refresh ──
 	pi.on("session_start", async (event, ctx) => {
 		const generation = ++sessionGeneration;
+		expiredRefreshAt.clear();
 		codexResponseDataTransferred = false;
 		codexResponseCleanTicks = 0;
 		if (!ctx.hasUI) return;
