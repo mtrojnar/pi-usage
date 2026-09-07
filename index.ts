@@ -2,7 +2,7 @@
  * pi-usage — Usage limit checker for pi coding agent
  *
  * Checks Codex, Anthropic, GitHub Copilot, OpenCode Go/Zen,
- * and compatible subscription usage limits at startup.
+ * compatible subscription usage limits, and OpenRouter spending at startup.
  * Displays a startup report by default; persistent widget is opt-in.
  *
  * Also provides `/usage` command to refresh on demand.
@@ -14,10 +14,11 @@
  *   OpenCode Go:  Uses OPENCODE_API_KEY for model probes, plus optional
  *                 OPENCODE_GO_WORKSPACE_ID + OPENCODE_GO_AUTH_COOKIE for quota
  *   OpenCode Zen / compatible providers: Uses API keys from auth.json/env
+ *   OpenRouter:   Uses resolved pi auth for daily spend, key budgets, and account credits
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, RefreshTrigger, SubscriptionUsage, UsageContext, UsageSnapshot } from "./src/types.ts";
+import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, OpenRouterUsage, RefreshTrigger, SubscriptionUsage, UsageContext, UsageSnapshot } from "./src/types.ts";
 import {
 	ANTHROPIC_PROVIDER,
 	AUTO_REFRESH_MINUTES,
@@ -36,6 +37,7 @@ import {
 	getOpenCodeGoQuotaConfig,
 	readUsageWidgetSetting,
 } from "./src/config.ts";
+import { checkOpenRouterUsage, getOpenRouterAuth, OPENROUTER_PROVIDER } from "./src/openrouter.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
 import { quotaWindowIsExpired } from "./src/format.ts";
 import { unrefTimer } from "./src/http.ts";
@@ -203,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 	let anthropicUsage: AnthropicUsage | undefined;
 	let copilotUsage: CopilotUsage | undefined;
 	let goUsage: OpenCodeGoUsage | undefined;
+	let openrouterUsage: OpenRouterUsage | undefined;
 	const subscriptionUsages = new Map<string, SubscriptionUsage>();
 
 	// Refresh bookkeeping.
@@ -248,6 +251,9 @@ export default function (pi: ExtensionAPI) {
 	function expiredProvidersNeedingRefresh(now: number): Set<string> {
 		const providers = new Set<string>();
 		if (subscriptionHasExpiredWindows(goUsage)) providers.add(OPENCODE_GO_PROVIDER);
+		if ([openrouterUsage?.budget, { resetAt: openrouterUsage?.dailyResetAt }].some(quotaWindowIsExpired)) {
+			providers.add(OPENROUTER_PROVIDER);
+		}
 		if ([anthropicUsage?.fiveHour, anthropicUsage?.weekly].some(quotaWindowIsExpired)) providers.add(ANTHROPIC_PROVIDER);
 		if ([copilotUsage?.requests, copilotUsage?.premiumRequests].some(quotaWindowIsExpired)) providers.add(GITHUB_COPILOT_PROVIDER);
 		for (const usage of subscriptionUsageList()) {
@@ -275,6 +281,7 @@ export default function (pi: ExtensionAPI) {
 	function currentSnapshot(): UsageSnapshot {
 		return {
 			codex: codexUsage,
+			openrouter: openrouterUsage,
 			anthropic: anthropicUsage,
 			copilot: copilotUsage,
 			go: goUsage,
@@ -495,6 +502,21 @@ export default function (pi: ExtensionAPI) {
 					() => { goUsage = undefined; },
 				);
 			}
+
+			// Accounting only: normal model responses cannot establish accounting freshness.
+			runCheck<OpenRouterUsage>(
+				OPENROUTER_PROVIDER,
+				async (providerSignal) => {
+					const auth = await getOpenRouterAuth(ctx);
+					return auth && !providerSignal.aborted ? checkOpenRouterUsage(auth, providerSignal) : undefined;
+				},
+				() => openrouterUsage,
+				[],
+				(result) => { openrouterUsage = result; },
+				(result) => !result.error,
+				undefined,
+				() => { openrouterUsage = undefined; },
+			);
 
 			// Check other OpenAI/Anthropic-compatible subscription providers.
 			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
@@ -719,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── /usage command ──
 	pi.registerCommand("usage", {
-		description: "Refresh and show Codex, Anthropic, Copilot, OpenCode, and compatible subscription usage limits",
+		description: "Refresh usage limits for Codex, Anthropic, Copilot, OpenCode, and compatible providers, plus OpenRouter spend, budgets, and credits",
 		handler: async (_args, ctx) => {
 			await refreshUsage(ctx, "manual");
 		},

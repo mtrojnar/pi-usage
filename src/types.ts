@@ -207,8 +207,18 @@ export interface OpenCodeGoQuotaResult {
 
 export type RefreshTrigger = "startup" | "manual" | "auto";
 
+/** Read-only accounting, not a model availability signal. All amounts are USD. */
+export interface OpenRouterUsage {
+	dailySpend?: number;
+	dailyResetAt?: number;
+	budget?: { limit: number; used?: number; resetAt?: number };
+	creditRemaining?: number;
+	error?: string;
+}
+
 /** Cached usage of every provider, as consumed by the report/widget/footer renderers. */
 export interface UsageSnapshot {
+	openrouter?: OpenRouterUsage;
 	codex?: CodexUsage;
 	anthropic?: AnthropicUsage;
 	copilot?: CopilotUsage;

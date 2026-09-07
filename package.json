@@ -1,7 +1,7 @@
 {
   "name": "@mtrojnar/pi-usage",
   "version": "0.1.6",
-  "description": "Usage and rate-limit monitor for pi coding agent, with startup reports and live footer/widget updates for Codex, Claude, Copilot, OpenCode, and more.",
+  "description": "Usage, rate-limit, and spending monitor for pi coding agent: Codex, Claude, Copilot, OpenCode, and OpenRouter daily spend, key budgets, and account credits.",
   "license": "MIT",
   "author": "timm-u and Michał Trojnara",
   "authors": [
@@ -42,6 +42,9 @@
     "opencode",
     "opencode-go",
     "opencode-zen",
+    "openrouter",
+    "spending",
+    "credits",
     "kimi",
     "zai",
     "xiaomi",
@@ -65,7 +68,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts",
+    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts openrouter.test.ts",
     "prepublishOnly": "npm run check && npm test",
     "pack:dry-run": "npm pack --dry-run"
   },

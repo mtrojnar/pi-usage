@@ -35,6 +35,9 @@ for (const proactive of [false, true]) {
 	it(`expired-window refresh respects PI_USAGE_PROACTIVE=${proactive} and debounce`, () => {
 		runFixture("expired-refresh", { PI_USAGE_PROACTIVE: String(proactive) });
 	});
+	it(`OpenRouter accounting refresh respects PI_USAGE_PROACTIVE=${proactive}`, () => {
+		runFixture("openrouter-refresh", { PI_USAGE_PROACTIVE: String(proactive) });
+	});
 }
 
 it("tracks passive state revisions independently of quota freshness", () => {

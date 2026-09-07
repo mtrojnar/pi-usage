@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
+Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, **OpenRouter** accounting, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -202,6 +202,25 @@ Additional OpenAI/Anthropic-compatible subscription probes are enabled only when
 
 Kimi Coding first calls `https://api.kimi.com/coding/v1/usages` with Bearer authentication to read quota windows without a model request or usage billing. If that endpoint fails, it falls back to a minimal 1-token model request, which may consume usage. Other compatible providers use minimal 1-token model requests. Checks are skipped on auto-refresh when recent passive provider/quota signals are available and cached quota windows have not expired; bare successful responses do not defer checks.
 
+### OpenRouter
+
+No extra setup is needed when pi has OpenRouter configured (`openrouter`, including `OPENROUTER_API_KEY`). pi-usage reuses the session registry's effective credential and checks two read-only endpoints—never a paid model probe:
+
+- `GET https://openrouter.ai/api/v1/key`: daily OpenRouter credit spend and the optional per-key spending cap.
+- `GET https://openrouter.ai/api/v1/credits`: account credit remaining (`total_credits - total_usage`). OpenRouter currently documents this endpoint as requiring a management key. Permission failures or unavailable balance data simply omit this field; no separate management credential is requested.
+
+Compact footer example:
+
+```text
+⚡ Codex:25%/7d │ Claude:25%/2.4h,12%/1.3d │ OpenRouter:$3.42/d,$6.30/$25/2.4h,$42.10 left
+```
+
+OpenRouter fields are daily spend, key-budget used/limit (with a countdown when known), and account credit remaining. Unavailable fields are omitted. Uncapped keys have no budget field. A cap with unknown usage displays `--/$25` without a bar. Nonzero amounts below one cent display as `<$0.01`.
+
+The widget/report labels these as `today`, `key`, and `credit`; only a key budget with both used and limit values gets a progress bar. Budget usage comes from `limit - limit_remaining`, respecting OpenRouter's reset period and BYOK limit setting. Daily spend is OpenRouter credit usage, excluding external BYOK spend. Known daily/weekly/monthly resets use OpenRouter's documented midnight UTC boundaries (weeks start Monday); unknown reset types have no countdown. Expired daily/budget values display `--` until refreshed and trigger the usual debounced provider-only refresh when proactive checks are enabled.
+
+Account credits are shared across keys and are distinct from the key budget. Accounting success does not assert model availability. Checks run at startup, periodically, and on `/usage`; ordinary model responses do not defer accounting refreshes. Credentials remain origin-bound, and redirects are rejected just as for other providers.
+
 ## Usage
 
 ### Automatic
@@ -384,6 +403,7 @@ Widget display uses pi-style extension config files:
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
 | `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for OpenCode Go and OpenCode Zen model availability probes |
+| `OPENROUTER_API_KEY` | unset | OpenRouter key resolved through pi for read-only accounting checks |
 | `KIMI_API_KEY` | unset | Kimi Coding API key for the dedicated usage endpoint and fallback model probing |
 | `ZAI_API_KEY` | unset | Z.AI API key for compatible subscription probing |
 | `ZAI_CODING_CN_API_KEY` | unset | Z.AI Coding CN API key for compatible subscription probing |

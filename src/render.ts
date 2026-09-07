@@ -5,6 +5,7 @@ import type {
 	CopilotUsage,
 	GoModelStatus,
 	OpenCodeGoUsage,
+	OpenRouterUsage,
 	SubscriptionUsage,
 	UsageContext,
 	UsageSnapshot,
@@ -263,6 +264,58 @@ export function renderGoWindows(go: OpenCodeGoUsage, fmt: Fmt, useColor: boolean
 	return lines;
 }
 
+// ───────── OpenRouter Accounting ─────────
+
+export function formatMoney(value: number): string {
+	if (value !== 0 && Math.abs(value) < 0.01) return value < 0 ? "-<$0.01" : "<$0.01";
+	return value < 0 ? `-$${Math.abs(value).toFixed(2)}` : `$${value.toFixed(2)}`;
+}
+
+function budgetPercent(budget: NonNullable<OpenRouterUsage["budget"]>): number | undefined {
+	if (budget.used === undefined) return undefined;
+	return budget.limit === 0 ? 100 : clampPercent(budget.used / budget.limit * 100);
+}
+
+function budgetText(budget: NonNullable<OpenRouterUsage["budget"]>): string {
+	const used = quotaWindowIsExpired(budget) || budget.used === undefined ? "--" : formatMoney(budget.used);
+	return `${used}/${formatMoney(budget.limit).replace(/\.00$/, "")}`;
+}
+
+export function renderOpenRouter(usage: OpenRouterUsage, fmt: Fmt): string[] {
+	const lines = sectionLines(fmt, "OpenRouter", "accent", "");
+	if (usage.dailySpend !== undefined) {
+		const daily = quotaWindowIsExpired({ resetAt: usage.dailyResetAt }) ? "--" : formatMoney(usage.dailySpend);
+		lines.push(`  ${fmt("dim", `today: ${daily}`)}`);
+	}
+	if (usage.budget) {
+		const budget = usage.budget;
+		const expired = quotaWindowIsExpired(budget);
+		const percent = budgetPercent(budget);
+		const bar = percent !== undefined && !expired ? `${progressBar(percent)} ` : "";
+		const reset = expired ? " stale" : resetPhrase(budget.resetAt);
+		lines.push(`  key: ${fmt(expired || percent === undefined ? "dim" : usageColor(percent), bar + budgetText(budget))}${fmt("dim", reset)}`);
+	}
+	if (usage.creditRemaining !== undefined) lines.push(`  ${fmt(usage.creditRemaining <= 0 ? "error" : "dim", `credit: ${formatMoney(usage.creditRemaining)} left`)}`);
+	if (usage.error) lines.push(`  ${fmt("warning", truncate(usage.error, 120))}`);
+	return lines;
+}
+
+export function openRouterFooter(usage: OpenRouterUsage, fmt: Fmt): string {
+	const parts: string[] = [];
+	if (usage.dailySpend !== undefined) {
+		parts.push(fmt("dim", `${quotaWindowIsExpired({ resetAt: usage.dailyResetAt }) ? "--" : formatMoney(usage.dailySpend)}/d`));
+	}
+	if (usage.budget) {
+		const expired = quotaWindowIsExpired(usage.budget);
+		const percent = budgetPercent(usage.budget);
+		const reset = expired ? undefined : resetDuration(usage.budget.resetAt);
+		parts.push(fmt(expired || percent === undefined ? "dim" : footerUsageColor(percent), budgetText(usage.budget) + (reset ? `/${reset}` : "")));
+	}
+	if (usage.creditRemaining !== undefined) parts.push(fmt(usage.creditRemaining <= 0 ? "error" : "dim", `${formatMoney(usage.creditRemaining)} left`));
+	if (usage.error) parts.push(fmt("warning", "error"));
+	return parts.join(fmt("dim", ","));
+}
+
 // ───────── Report Builder ─────────
 
 interface UsageReportOptions {
@@ -282,6 +335,7 @@ function buildUsageReportLines(snapshot: UsageSnapshot, opts: UsageReportOptions
 	if (snapshot.anthropic) lines.push(...renderAnthropicWindows(snapshot.anthropic, fmt, useColor));
 	if (snapshot.copilot) lines.push(...renderCopilotWindows(snapshot.copilot, fmt, useColor));
 	if (snapshot.go) lines.push(...renderGoWindows(snapshot.go, fmt, useColor));
+	if (snapshot.openrouter) lines.push(...renderOpenRouter(snapshot.openrouter, fmt));
 	for (const subscription of snapshot.subscriptions) {
 		if (usageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
 	}
@@ -420,6 +474,10 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 				{ ...subscription.monthly, suffix: "m" },
 			], subscription.status, subscription.retryAfterSeconds, subscription.retryResetAt),
 		);
+	}
+
+	if (snapshot.openrouter) {
+		addPart("OpenRouter", false, openRouterFooter(snapshot.openrouter, (color, text) => theme.fg(color, text)));
 	}
 
 	if (parts.length > 0) {
