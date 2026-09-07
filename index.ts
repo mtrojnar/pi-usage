@@ -221,7 +221,8 @@ export default function (pi: ExtensionAPI) {
 	let sessionGeneration = 0;
 	let expiredRefreshAt = 0;
 
-	// Timestamps and revisions of passive response-header updates, keyed by provider.
+	// Quota freshness defers auto checks; every parsed state update advances the
+	// revision so in-flight checks cannot overwrite newer availability changes.
 	const passiveHeadersAt = new Map<string, number>();
 	const passiveHeaderRevisions = new Map<string, number>();
 
@@ -229,8 +230,8 @@ export default function (pi: ExtensionAPI) {
 		return passiveHeaderRevisions.get(key) ?? 0;
 	}
 
-	function markPassiveUpdate(key: string): void {
-		passiveHeadersAt.set(key, Date.now());
+	function markPassiveUpdate(key: string, hasSignal = true): void {
+		if (hasSignal) passiveHeadersAt.set(key, Date.now());
 		passiveHeaderRevisions.set(key, passiveHeaderRevision(key) + 1);
 	}
 
@@ -372,7 +373,7 @@ export default function (pi: ExtensionAPI) {
 					} else if (outcome.status === "fulfilled") {
 						const result = outcome.value;
 						if (!result) {
-							onUnavailable?.();
+							if (passiveHeaderRevision(provider) === passiveRevision) onUnavailable?.();
 						} else {
 							const merged = passiveHeaderRevision(provider) === passiveRevision
 								? result
@@ -607,7 +608,7 @@ export default function (pi: ExtensionAPI) {
 				anthropicUsage = normalizeAnthropicResetTimes(parsed);
 				// Bare successful responses carry no quota data; only real signal
 				// counts as freshness for deferring proactive refreshes.
-				if (hasAnthropicHeaderSignal(event.headers, event.status)) markPassiveUpdate(ANTHROPIC_PROVIDER);
+				markPassiveUpdate(ANTHROPIC_PROVIDER, hasAnthropicHeaderSignal(event.headers, event.status));
 				updated = true;
 			}
 		}
@@ -616,7 +617,7 @@ export default function (pi: ExtensionAPI) {
 			const parsed = parseCopilotUsageHeaders(event.headers, event.status, modelId, copilotUsage);
 			if (parsed) {
 				copilotUsage = normalizeCopilotResetTimes(parsed);
-				if (hasCopilotHeaderSignal(event.headers, event.status)) markPassiveUpdate(GITHUB_COPILOT_PROVIDER);
+				markPassiveUpdate(GITHUB_COPILOT_PROVIDER, hasCopilotHeaderSignal(event.headers, event.status));
 				updated = true;
 			}
 		}
@@ -625,11 +626,9 @@ export default function (pi: ExtensionAPI) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, modelId, goUsage);
 			if (parsed) {
 				goUsage = normalizeSubscriptionResetTimes(parsed);
-				if (hasOpenCodeGoHeaderSignal(event.headers, event.status)) {
-					markPassiveUpdate(OPENCODE_GO_PROVIDER);
-					for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
-						markPassiveUpdate(goQuotaPassiveKey(window));
-					}
+				markPassiveUpdate(OPENCODE_GO_PROVIDER, hasOpenCodeGoHeaderSignal(event.headers, event.status));
+				for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
+					markPassiveUpdate(goQuotaPassiveKey(window));
 				}
 				updated = true;
 			}
@@ -643,7 +642,7 @@ export default function (pi: ExtensionAPI) {
 				subscriptionUsages.set(subscriptionConfig.provider, normalizeSubscriptionResetTimes(parsed.usage));
 				// Bare successful responses carry no quota data; only real signal
 				// counts as freshness for deferring proactive refreshes.
-				if (parsed.hasSignal) markPassiveUpdate(subscriptionConfig.provider);
+				markPassiveUpdate(subscriptionConfig.provider, parsed.hasSignal);
 				updated = true;
 			}
 		}
