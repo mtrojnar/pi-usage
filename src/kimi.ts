@@ -1,23 +1,7 @@
 import type { SubscriptionQuotaWindow, UsageApiWindows } from "./types.ts";
 import { clampPercent } from "./format.ts";
+import { jsonNumber, jsonObject } from "./json.ts";
 import { parseResetAtSeconds, resetAfterFromAt } from "./headers.ts";
-
-// ───────── Types ─────────
-
-interface KimiQuotaDetail {
-	limit?: string | number;
-	used?: string | number;
-	remaining?: string | number;
-	resetTime?: string;
-}
-
-interface KimiUsagePayload {
-	usage?: KimiQuotaDetail;
-	limits?: Array<{
-		window?: { duration?: string | number; timeUnit?: string };
-		detail?: KimiQuotaDetail;
-	}>;
-}
 
 // ───────── Parsing ─────────
 
@@ -29,30 +13,30 @@ const MINUTE_MS_UNITS: Record<string, number> = {
 	TIME_UNIT_MONTH: 43200,
 };
 
-function windowMinutes(window: { duration?: string | number; timeUnit?: string } | undefined): number {
+function windowMinutes(value: unknown): number {
+	const window = jsonObject(value);
 	if (!window) return 0;
-	const duration = Number(window.duration);
-	const unit = MINUTE_MS_UNITS[window.timeUnit ?? ""] ?? 0;
-	return Number.isFinite(duration) && duration > 0 ? duration * unit : 0;
+	const duration = jsonNumber(window.duration);
+	const unit = typeof window.timeUnit === "string" ? MINUTE_MS_UNITS[window.timeUnit] ?? 0 : 0;
+	return duration !== undefined && duration > 0 ? duration * unit : 0;
 }
 
-function quotaWindow(detail: KimiQuotaDetail | undefined): SubscriptionQuotaWindow | undefined {
+function quotaWindow(value: unknown): SubscriptionQuotaWindow | undefined {
+	const detail = jsonObject(value);
 	if (!detail) return undefined;
-	const limit = Number(detail.limit);
-	const used = Number(detail.used);
-	const remaining = Number(detail.remaining);
-	const resetAt = parseResetAtSeconds(detail.resetTime);
+	const limit = jsonNumber(detail.limit);
+	const used = jsonNumber(detail.used);
+	const remaining = jsonNumber(detail.remaining);
+	if (limit === undefined || limit <= 0 || (used === undefined && remaining === undefined)) return undefined;
+	const resetAt = parseResetAtSeconds(typeof detail.resetTime === "string" ? detail.resetTime : undefined);
 
-	const usedPercent = Number.isFinite(limit) && limit > 0 && Number.isFinite(used)
-		? clampPercent((used / limit) * 100)
-		: undefined;
-	const remainingPercent = Number.isFinite(limit) && limit > 0 && Number.isFinite(remaining)
+	const usedPercent = used !== undefined ? clampPercent((used / limit) * 100) : undefined;
+	const remainingPercent = remaining !== undefined
 		? clampPercent((remaining / limit) * 100)
 		: usedPercent !== undefined
 			? clampPercent(100 - usedPercent)
 			: undefined;
 
-	if (usedPercent === undefined && remainingPercent === undefined && resetAt <= 0) return undefined;
 	return {
 		usedPercent,
 		remainingPercent,
@@ -72,14 +56,15 @@ function quotaWindow(detail: KimiQuotaDetail | undefined): SubscriptionQuotaWind
  * Window classification by duration: <=1d → rolling, <=8d → weekly, else monthly.
  */
 export function parseKimiUsagePayload(payload: unknown): UsageApiWindows | undefined {
-	if (!payload || typeof payload !== "object") return undefined;
-	const data = payload as KimiUsagePayload;
+	const data = jsonObject(payload);
+	if (!data) return undefined;
 
 	const out: UsageApiWindows = {};
 	const topLevel = quotaWindow(data.usage);
 	if (topLevel) out.weekly = topLevel;
 
-	for (const entry of data.limits ?? []) {
+	for (const value of Array.isArray(data.limits) ? data.limits : []) {
+		const entry = jsonObject(value);
 		const minutes = windowMinutes(entry?.window);
 		const window = quotaWindow(entry?.detail);
 		if (!minutes || !window) continue;

@@ -14,6 +14,7 @@ import {
 } from "./config.ts";
 import { readStoredCredential, resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
+import { jsonNumber, jsonObject } from "./json.ts";
 import {
 	hasHeaderPrefix,
 	headerValue,
@@ -148,21 +149,12 @@ export function parseAnthropicUsageHeaders(
 
 // ───────── Usage Endpoint (Claude Pro/Max OAuth) ─────────
 
-interface AnthropicUsageApiWindow {
-	utilization?: number | null;
-	resets_at?: string | null;
-}
-
-interface AnthropicUsageApiResponse {
-	five_hour?: AnthropicUsageApiWindow | null;
-	seven_day?: AnthropicUsageApiWindow | null;
-}
-
-function windowFromApi(window: AnthropicUsageApiWindow | null | undefined): AnthropicUsageWindow | undefined {
+function windowFromApi(value: unknown): AnthropicUsageWindow | undefined {
+	const window = jsonObject(value);
 	if (!window) return undefined;
-	const utilization = Number(window.utilization);
-	if (!Number.isFinite(utilization)) return undefined;
-	const resetAt = parseResetAtSeconds(window.resets_at ?? undefined);
+	const utilization = jsonNumber(window.utilization);
+	if (utilization === undefined) return undefined;
+	const resetAt = parseResetAtSeconds(typeof window.resets_at === "string" ? window.resets_at : undefined);
 	return {
 		utilizationPercent: clampPercent(utilization),
 		resetAt: resetAt > 0 ? resetAt : undefined,
@@ -198,9 +190,9 @@ export async function checkAnthropicUsageFromUsageApi(
 			return { success: false, error: `Anthropic usage API: ${await readErrorDetail(response, signal)}` };
 		}
 
-		const data = await readResponseJson<AnthropicUsageApiResponse>(response, signal);
-		const fiveHour = windowFromApi(data.five_hour);
-		const weekly = windowFromApi(data.seven_day);
+		const data = jsonObject(await readResponseJson(response, signal));
+		const fiveHour = windowFromApi(data?.five_hour);
+		const weekly = windowFromApi(data?.seven_day);
 		if (!fiveHour && !weekly) {
 			return { success: false, error: "Anthropic usage API: no usage windows" };
 		}

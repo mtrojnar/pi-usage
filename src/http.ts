@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import { CHECK_TIMEOUT_MS, MAX_BODY_BYTES } from "./config.ts";
 import { truncate } from "./format.ts";
+import { jsonObject } from "./json.ts";
 
 // ───────── HTTP Helpers ─────────
 
@@ -48,6 +49,7 @@ export async function fetchSameOrigin(
 	init: RequestInit,
 ): Promise<Response> {
 	assertCredentialOrigin(url, credentialBaseUrl);
+	init.signal?.throwIfAborted();
 	return fetch(url, { ...init, redirect: "error" });
 }
 
@@ -77,6 +79,7 @@ export function createTimeoutSignal(
 
 /** Fetch with the standard check timeout, chained to an optional parent signal. */
 export async function fetchWithTimeout(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+	signal?.throwIfAborted();
 	const timeoutSignal = createTimeoutSignal(CHECK_TIMEOUT_MS, signal);
 	try {
 		return await fetch(url, { ...init, redirect: "error", signal: timeoutSignal.signal });
@@ -135,6 +138,7 @@ export async function readResponseText(response: Response, signal?: AbortSignal)
 				throw readErr;
 			}
 		}
+		if (timedOut) throw new Error("Response body read timed out");
 		if (aborted) throw new Error("Response body read aborted");
 	} finally {
 		clearTimeout(timeout);
@@ -151,8 +155,8 @@ export async function readResponseText(response: Response, signal?: AbortSignal)
 	return new TextDecoder().decode(bytes);
 }
 
-export async function readResponseJson<T>(response: Response, signal?: AbortSignal): Promise<T> {
-	return JSON.parse(await readResponseText(response, signal)) as T;
+export async function readResponseJson(response: Response, signal?: AbortSignal): Promise<unknown> {
+	return JSON.parse(await readResponseText(response, signal));
 }
 
 export async function cancelResponseBody(response: Response): Promise<void> {
@@ -165,8 +169,9 @@ export async function cancelResponseBody(response: Response): Promise<void> {
 export async function readErrorMessage(response: Response, fallback: string, signal?: AbortSignal): Promise<string> {
 	try {
 		const body = await readResponseText(response, signal);
-		const parsed = JSON.parse(body);
-		return parsed?.error?.message ?? parsed?.message ?? parsed?.detail ?? fallback;
+		const parsed = jsonObject(JSON.parse(body));
+		const messages = [jsonObject(parsed?.error)?.message, parsed?.message, parsed?.detail];
+		return messages.find((value): value is string => typeof value === "string" && value.length > 0) ?? fallback;
 	} catch {
 		return fallback;
 	}

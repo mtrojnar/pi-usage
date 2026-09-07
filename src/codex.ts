@@ -2,7 +2,6 @@ import type {
 	CodexOAuthCredential,
 	CodexUsage,
 	CodexUsageApiResult,
-	OpenAIUsageResponse,
 	UsageContext,
 	OpenAIUsageWindow,
 	PassiveUsageUpdate,
@@ -15,6 +14,7 @@ import {
 } from "./config.ts";
 import { readStoredCredential, resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
+import { jsonNumber, jsonObject } from "./json.ts";
 import { hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
 import {
 	cancelResponseBody,
@@ -67,6 +67,19 @@ export function windowResetAt(window: OpenAIUsageWindow | null | undefined): num
 
 // ───────── Codex Usage Check ─────────
 
+function windowFromApi(value: unknown): OpenAIUsageWindow | undefined {
+	const window = jsonObject(value);
+	if (!window) return undefined;
+	const used = jsonNumber(window.used_percent);
+	if (used === undefined) return undefined;
+	return {
+		used_percent: used,
+		limit_window_seconds: jsonNumber(window.limit_window_seconds),
+		reset_after_seconds: jsonNumber(window.reset_after_seconds),
+		reset_at: jsonNumber(window.reset_at),
+	};
+}
+
 export async function checkCodexUsageFromUsageApi(
 	token: string,
 	accountId: string,
@@ -86,18 +99,20 @@ export async function checkCodexUsageFromUsageApi(
 			return { success: false, error: `OpenAI usage API: ${await readErrorDetail(response, signal)}` };
 		}
 
-		const data = await readResponseJson<OpenAIUsageResponse>(response, signal);
-		const primary = data.rate_limit?.primary_window;
+		const data = jsonObject(await readResponseJson(response, signal));
+		const rateLimit = jsonObject(data?.rate_limit);
+		const primary = windowFromApi(rateLimit?.primary_window);
 		if (!primary) {
 			return { success: false, error: "OpenAI usage API: no primary quota window" };
 		}
 
-		const secondary = data.rate_limit?.secondary_window;
-		const codeReview = data.code_review_rate_limit?.primary_window;
+		const secondary = windowFromApi(rateLimit?.secondary_window);
+		const codeReview = windowFromApi(jsonObject(data?.code_review_rate_limit)?.primary_window);
+		const credits = jsonObject(data?.credits);
 		const usage: CodexUsage = {
-			planType: data.plan_type ?? "unknown",
+			planType: typeof data?.plan_type === "string" ? data.plan_type : "unknown",
 			activeLimit: "unknown",
-			rateLimited: Boolean(data.rate_limit?.limit_reached),
+			rateLimited: rateLimit?.limit_reached === true,
 			primaryUsedPercent: windowUsedPercent(primary),
 			// Some plans temporarily expose only a weekly window and place it in
 			// primary_window. Do not turn an absent secondary_window into a fake 0% row.
@@ -113,9 +128,9 @@ export async function checkCodexUsageFromUsageApi(
 			secondaryResetAt: windowResetAt(secondary),
 			codeReviewResetAt: codeReview ? windowResetAt(codeReview) : undefined,
 			primaryOverSecondaryLimitPercent: 0,
-			creditsHasCredits: Boolean(data.credits?.has_credits),
-			creditsBalance: data.credits?.balance ?? "",
-			creditsUnlimited: Boolean(data.credits?.unlimited),
+			creditsHasCredits: credits?.has_credits === true,
+			creditsBalance: typeof credits?.balance === "string" ? credits.balance : "",
+			creditsUnlimited: credits?.unlimited === true,
 			source: "usage_api",
 		};
 		return { success: true, usage };
