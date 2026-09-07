@@ -59,7 +59,7 @@ When pi starts up, **pi-usage** automatically:
    - Error details if credits are exhausted
    - How many documented Go models were checked before a result was found
 
-5. **OpenCode Zen and compatible subscriptions** — Uses a shared lightweight probe engine for OpenAI-compatible and Anthropic-compatible subscription providers. It currently supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. It shows:
+5. **OpenCode Zen and compatible subscriptions** — Supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. Kimi Coding reads its dedicated usage endpoint first, showing **5-hour rolling and weekly quota windows** without making a model request. If that endpoint fails, it falls back to the shared lightweight probe engine used by the other compatible providers. It shows:
    - Whether a provider's models are **available** or **rate limited**
    - Which low-cost model was checked
    - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
@@ -199,13 +199,13 @@ Additional OpenAI/Anthropic-compatible subscription probes are enabled only when
 | Xiaomi Token Plan CN | `xiaomi-token-plan-cn` | `XIAOMI_TOKEN_PLAN_CN_API_KEY` |
 | Xiaomi Token Plan SGP | `xiaomi-token-plan-sgp` | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` |
 
-These checks make minimal 1-token model requests and are skipped on auto-refresh when recent passive response data is available.
+Kimi Coding first calls `https://api.kimi.com/coding/v1/usages` with Bearer authentication to read quota windows without a model request or usage billing. If that endpoint fails, it falls back to a minimal 1-token model request, which may consume usage. Other compatible providers use minimal 1-token model requests. Checks are skipped on auto-refresh when recent passive provider/quota signals are available and cached quota windows have not expired; bare successful responses do not defer checks.
 
 ## Usage
 
 ### Automatic
 
-Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go/OpenCode Zen/compatible-provider status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 1-minute activity window: refresh Codex usage when Codex data flowed during the window, or after enough clean windows to match the normal auto-refresh interval (30 clean windows / 30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds without extra API calls.
+Usage limits are checked automatically on startup and every 30 minutes. pi-usage also listens for normal provider response headers and updates cached Codex/Anthropic/Copilot/OpenCode Go/OpenCode Zen/compatible-provider status passively when headers expose usage or rate-limit details. Because Codex WebSocket responses do not expose those headers, pi-usage checks a 1-minute activity window: refresh Codex usage when Codex data flowed during the window, or after enough clean windows to match the normal auto-refresh interval (30 clean windows / 30 minutes by default) while idle. Cached reset countdowns in the widget and footer are re-rendered every 60 seconds. When proactive checks are enabled, an expired Anthropic, Copilot, OpenCode Go, or compatible-provider quota window also triggers an automatic refresh on a display tick, debounced to at most once every 300 seconds by default. Expired percentages display as `--` until refreshed. With `PI_USAGE_PROACTIVE=false`, display ticks only re-render cached data; use `/usage` to refresh manually.
 
 By default, startup shows a one-time **Usage Limits** report plus compact footer status. Footer labels (`⚡`, `Codex`, `Claude`, `Copilot`, `Go`, `Zen`, separators) are dimmed; usage/reset chunks are color-coded by percentage. Enable the persistent widget above the editor in `~/.pi/agent/pi-usage.json`:
 
@@ -351,7 +351,10 @@ OpenCode Zen and the additional compatible providers share a generic probe engin
 - Builds a low-cost model list from documented fallbacks plus pi's installed model registry.
 - Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatible endpoints.
 - Prefers the model you currently have selected in pi when it belongs to the provider being checked, so reported limits match that model; otherwise it starts from the cheapest known model.
-- Sends a minimal 1-token request, stops on the first working model, and only tries another model when the error clearly says the model is unavailable.
+- Tries a dedicated quota endpoint first when configured (currently Kimi Coding's `/coding/v1/usages`), without making a model request. Kimi's top-level usage maps to the weekly window; additional windows are classified by duration (up to 1 day: rolling, up to 8 days: weekly, longer: monthly).
+- Otherwise, or when the usage endpoint fails, sends a minimal 1-token request, stops on the first working model, and only tries another model when the error clearly says the model is unavailable.
+- Keeps credentials bound to their resolved origin: a custom-provider key is never sent to an official quota endpoint on another origin. Both usage checks and fallback probes reject redirects.
+- Reports both the usage-endpoint and fallback-probe errors when both fail.
 - Parses future/provider quota headers shaped like `x-<provider>-rolling-used-percent`, `x-<provider>-weekly-used-percent`, and `x-<provider>-monthly-reset-after-seconds`.
 
 During normal model use, successful compatible-provider responses passively mark that provider as available, and `429`/quota responses mark it as limited.
@@ -369,9 +372,10 @@ Widget display uses pi-style extension config files:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive header updates defer matching auto checks |
-| `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds |
-| `PI_USAGE_PROACTIVE` | `true` | Run startup and periodic network checks; set `false` for passive headers plus manual `/usage` only |
+| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive provider/quota signals defer matching auto checks unless cached windows have expired |
+| `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds; also checks for expired windows when proactive checks are enabled |
+| `PI_USAGE_EXPIRED_REFRESH_DEBOUNCE_SEC` | `300` | Minimum interval in seconds between automatic refreshes triggered by expired quota windows; only applies when proactive checks are enabled |
+| `PI_USAGE_PROACTIVE` | `true` | Run startup, periodic, and expired-window network checks; set `false` for passive headers plus manual `/usage` only (unless Codex response refresh is explicitly enabled) |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH` | same as `PI_USAGE_PROACTIVE` | Refresh Codex usage endpoint while Codex responses transfer data; useful because WebSocket transport has no usage headers |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH_SEC` | `60` | Codex activity-window length; dirty windows refresh usage, and clean windows produce an idle refresh after the normal auto-refresh interval |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
@@ -379,7 +383,7 @@ Widget display uses pi-style extension config files:
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
 | `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for OpenCode Go and OpenCode Zen model availability probes |
-| `KIMI_API_KEY` | unset | Kimi Coding API key for compatible subscription probing |
+| `KIMI_API_KEY` | unset | Kimi Coding API key for the dedicated usage endpoint and fallback model probing |
 | `ZAI_API_KEY` | unset | Z.AI API key for compatible subscription probing |
 | `ZAI_CODING_CN_API_KEY` | unset | Z.AI Coding CN API key for compatible subscription probing |
 | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | unset | Xiaomi Token Plan AMS API key for compatible subscription probing |

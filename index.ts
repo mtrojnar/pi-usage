@@ -24,6 +24,7 @@ import {
 	CHECK_TIMEOUT_MS,
 	CODEX_RESPONSE_REFRESH_ENABLED,
 	CODEX_RESPONSE_REFRESH_SECONDS,
+	EXPIRED_REFRESH_DEBOUNCE_MS,
 	GITHUB_COPILOT_PROVIDER,
 	NO_USAGE_WIDGET_FLAG,
 	OPENAI_CODEX_PROVIDER,
@@ -36,16 +37,18 @@ import {
 	readUsageWidgetSetting,
 } from "./src/config.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
+import { quotaWindowIsExpired } from "./src/format.ts";
 import { unrefTimer } from "./src/http.ts";
 import { mergeConcurrentFields, runIsolatedTask } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
-import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
-import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
+import { getAnthropicAuth, checkAnthropicUsage, hasAnthropicHeaderSignal, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
+import { getCopilotAuth, checkCopilotUsage, hasCopilotHeaderSignal, parseCopilotUsageHeaders } from "./src/copilot.ts";
 import {
 	checkOpenCodeGoUsage,
 	getOpenCodeAuth,
 	getOpenCodeGoQuotaHeaderWindows,
 	hasCompleteGoQuotaData,
+	hasOpenCodeGoHeaderSignal,
 	parseOpenCodeGoUsageHeaders,
 	reconcileOpenCodeGoRefresh,
 } from "./src/opencode-go.ts";
@@ -67,6 +70,11 @@ import {
 
 function nowSeconds(): number {
 	return Math.round(Date.now() / 1000);
+}
+
+function subscriptionHasExpiredWindows(usage?: SubscriptionUsage): boolean {
+	return usage !== undefined
+		&& [usage.rolling, usage.weekly, usage.monthly].some(quotaWindowIsExpired);
 }
 
 function resetAtFromAfter(resetAt: number | undefined, resetAfterSeconds: number | undefined, nowSec: number): number | undefined {
@@ -211,6 +219,7 @@ export default function (pi: ExtensionAPI) {
 	let codexResponseCleanTicks = 0;
 	let codexUsageRequestAt = 0;
 	let sessionGeneration = 0;
+	let expiredRefreshAt = 0;
 
 	// Timestamps and revisions of passive response-header updates, keyed by provider.
 	const passiveHeadersAt = new Map<string, number>();
@@ -233,6 +242,14 @@ export default function (pi: ExtensionAPI) {
 	function goQuotaUpdateIsFresh(): boolean {
 		return hasCompleteGoQuotaData(goUsage)
 			&& QUOTA_WINDOW_KINDS.every((window) => passiveUpdateIsFresh(goQuotaPassiveKey(window)));
+	}
+
+	/** Cached windows past their reset time need a proactive refresh. */
+	function expiredWindowsNeedRefresh(): boolean {
+		if (subscriptionHasExpiredWindows(goUsage)) return true;
+		if ([anthropicUsage?.fiveHour, anthropicUsage?.weekly].some(quotaWindowIsExpired)) return true;
+		if ([copilotUsage?.requests, copilotUsage?.premiumRequests].some(quotaWindowIsExpired)) return true;
+		return subscriptionUsageList().some(subscriptionHasExpiredWindows);
 	}
 
 	function isUsageWidgetEnabled(ctx: UsageContext): boolean {
@@ -399,7 +416,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Check Anthropic Claude Pro/Max; recent passive headers defer auto probes.
-			const skipAnthropicCheck = trigger === "auto" && passiveUpdateIsFresh(ANTHROPIC_PROVIDER);
+			const skipAnthropicCheck = trigger === "auto"
+				&& passiveUpdateIsFresh(ANTHROPIC_PROVIDER)
+				&& ![anthropicUsage?.fiveHour, anthropicUsage?.weekly].some(quotaWindowIsExpired);
 			if (!skipAnthropicCheck) {
 				runCheck(
 					ANTHROPIC_PROVIDER,
@@ -419,7 +438,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Check GitHub Copilot; recent passive headers defer auto probes.
-			const skipCopilotCheck = trigger === "auto" && passiveUpdateIsFresh(GITHUB_COPILOT_PROVIDER);
+			const skipCopilotCheck = trigger === "auto"
+				&& passiveUpdateIsFresh(GITHUB_COPILOT_PROVIDER)
+				&& ![copilotUsage?.requests, copilotUsage?.premiumRequests].some(quotaWindowIsExpired);
 			if (!skipCopilotCheck) {
 				runCheck(
 					GITHUB_COPILOT_PROVIDER,
@@ -442,6 +463,7 @@ export default function (pi: ExtensionAPI) {
 			const goQuotaState = getOpenCodeGoQuotaConfig();
 			const skipGoCheck = trigger === "auto"
 				&& passiveUpdateIsFresh(OPENCODE_GO_PROVIDER)
+				&& !subscriptionHasExpiredWindows(goUsage)
 				&& (!goQuotaState.config || goQuotaUpdateIsFresh())
 				&& !goQuotaState.error;
 			if (!skipGoCheck) {
@@ -463,7 +485,9 @@ export default function (pi: ExtensionAPI) {
 
 			// Check other OpenAI/Anthropic-compatible subscription providers.
 			for (const providerConfig of SUBSCRIPTION_PROVIDERS) {
-				if (trigger === "auto" && passiveUpdateIsFresh(providerConfig.provider)) continue;
+				if (trigger === "auto"
+					&& passiveUpdateIsFresh(providerConfig.provider)
+					&& !subscriptionHasExpiredWindows(subscriptionUsages.get(providerConfig.provider))) continue;
 				runCheck(
 					providerConfig.provider,
 					async (providerSignal) => {
@@ -524,6 +548,16 @@ export default function (pi: ExtensionAPI) {
 		displayTimer = setInterval(() => {
 			if (generation !== sessionGeneration) return;
 			renderCachedUsage(ctx, widgetLoading);
+
+			// A window past its reset time shows stale data; refresh promptly
+			// (debounced) instead of waiting for the next auto refresh tick.
+			if (PROACTIVE_REFRESH_ENABLED && !isLoading && expiredWindowsNeedRefresh()) {
+				const now = Date.now();
+				if (now - expiredRefreshAt >= EXPIRED_REFRESH_DEBOUNCE_MS) {
+					expiredRefreshAt = now;
+					refreshUsage(ctx, "auto").catch(() => {});
+				}
+			}
 		}, UI_REFRESH_SECONDS * 1000);
 		unrefTimer(displayTimer);
 
@@ -571,7 +605,9 @@ export default function (pi: ExtensionAPI) {
 			const parsed = parseAnthropicUsageHeaders(event.headers, event.status, modelId, anthropicUsage);
 			if (parsed) {
 				anthropicUsage = normalizeAnthropicResetTimes(parsed);
-				markPassiveUpdate(ANTHROPIC_PROVIDER);
+				// Bare successful responses carry no quota data; only real signal
+				// counts as freshness for deferring proactive refreshes.
+				if (hasAnthropicHeaderSignal(event.headers, event.status)) markPassiveUpdate(ANTHROPIC_PROVIDER);
 				updated = true;
 			}
 		}
@@ -580,7 +616,7 @@ export default function (pi: ExtensionAPI) {
 			const parsed = parseCopilotUsageHeaders(event.headers, event.status, modelId, copilotUsage);
 			if (parsed) {
 				copilotUsage = normalizeCopilotResetTimes(parsed);
-				markPassiveUpdate(GITHUB_COPILOT_PROVIDER);
+				if (hasCopilotHeaderSignal(event.headers, event.status)) markPassiveUpdate(GITHUB_COPILOT_PROVIDER);
 				updated = true;
 			}
 		}
@@ -589,9 +625,11 @@ export default function (pi: ExtensionAPI) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, modelId, goUsage);
 			if (parsed) {
 				goUsage = normalizeSubscriptionResetTimes(parsed);
-				markPassiveUpdate(OPENCODE_GO_PROVIDER);
-				for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
-					markPassiveUpdate(goQuotaPassiveKey(window));
+				if (hasOpenCodeGoHeaderSignal(event.headers, event.status)) {
+					markPassiveUpdate(OPENCODE_GO_PROVIDER);
+					for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
+						markPassiveUpdate(goQuotaPassiveKey(window));
+					}
 				}
 				updated = true;
 			}
@@ -602,8 +640,10 @@ export default function (pi: ExtensionAPI) {
 			const previous = subscriptionUsages.get(subscriptionConfig.provider);
 			const parsed = parseSubscriptionUsageHeaders(subscriptionConfig, event.headers, event.status, modelId, previous);
 			if (parsed) {
-				subscriptionUsages.set(subscriptionConfig.provider, normalizeSubscriptionResetTimes(parsed));
-				markPassiveUpdate(subscriptionConfig.provider);
+				subscriptionUsages.set(subscriptionConfig.provider, normalizeSubscriptionResetTimes(parsed.usage));
+				// Bare successful responses carry no quota data; only real signal
+				// counts as freshness for deferring proactive refreshes.
+				if (parsed.hasSignal) markPassiveUpdate(subscriptionConfig.provider);
 				updated = true;
 			}
 		}

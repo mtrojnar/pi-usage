@@ -7,10 +7,11 @@ import type {
 	SubscriptionUsage,
 	SubscriptionQuotaWindow,
 	UsageContext,
+	UsageApiWindows,
 } from "./types.ts";
 import { resolveBoundProviderAuth } from "./auth.ts";
-import { clampPercent } from "./format.ts";
-import { fetchSameOrigin, isSameHttpOrigin } from "./http.ts";
+import { clampPercent, errorText } from "./format.ts";
+import { fetchSameOrigin, fetchSameOriginWithTimeout, isSameHttpOrigin, piUsageUserAgent, readErrorDetail, readResponseJson } from "./http.ts";
 import {
 	hasHeaderPrefix,
 	headerValue,
@@ -31,6 +32,13 @@ import {
 
 // ───────── Types ─────────
 
+export interface SubscriptionUsageApiConfig {
+	/** Dedicated quota endpoint (GET, Bearer auth), tried before model probing. */
+	url: string;
+	/** Maps the endpoint's payload to generic quota windows; undefined = unusable payload. */
+	parse: (payload: unknown) => UsageApiWindows | undefined;
+}
+
 export interface SubscriptionProviderConfig {
 	provider: string;
 	label: string;
@@ -41,6 +49,7 @@ export interface SubscriptionProviderConfig {
 	preferredModelIds?: string[];
 	documentedModels?: SubscriptionProbeModel[];
 	quotaHeaderPrefixes?: string[];
+	usageApi?: SubscriptionUsageApiConfig;
 }
 
 const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
@@ -163,13 +172,20 @@ function firstPrefixedHeader(headers: Record<string, string>, prefixes: string[]
 	return undefined;
 }
 
+export interface SubscriptionHeaderParse {
+	usage: SubscriptionUsage;
+	/** True when the response carried real provider signal (quota/provider headers, 429/402) —
+	 *  as opposed to a bare successful response that only confirms the model works. */
+	hasSignal: boolean;
+}
+
 export function parseSubscriptionUsageHeaders(
 	config: SubscriptionProviderConfig,
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: SubscriptionUsage,
-): SubscriptionUsage | undefined {
+): SubscriptionHeaderParse | undefined {
 	const prefixes = config.quotaHeaderPrefixes ?? [config.provider];
 	const hasProviderHeaders = prefixes.some((prefix) => hasHeaderPrefix(headers, `x-${prefix}-`));
 	const statusHeader = firstPrefixedHeader(headers, prefixes, "status");
@@ -180,8 +196,10 @@ export function parseSubscriptionUsageHeaders(
 	const weekly = parseQuotaWindow(headers, prefixes, "weekly");
 	const monthly = parseQuotaWindow(headers, prefixes, "monthly");
 	const hasQuotaHeaders = rolling.hasHeaders || weekly.hasHeaders || monthly.hasHeaders;
-	const hasPassiveSignal = hasProviderHeaders || hasQuotaHeaders || status === 429 || (status >= 200 && status < 300 && !!responseModel);
-	if (!hasPassiveSignal) return undefined;
+	// Bare 2xx responses allow status/model recovery, but only provider/quota
+	// signals and limit errors count as freshness for deferring auto refreshes.
+	const hasSignal = hasProviderHeaders || hasQuotaHeaders || status === 429 || status === 402;
+	if (!hasSignal && !(status >= 200 && status < 300 && !!responseModel)) return undefined;
 
 	const inferredStatus: GoModelStatus = headerStatus
 		?? (status === 429
@@ -195,29 +213,88 @@ export function parseSubscriptionUsageHeaders(
 	const limited = inferredStatus === "rate_limited" || inferredStatus === "credits_error";
 
 	return {
-		provider: config.provider,
-		label: config.label,
-		shortLabel: config.shortLabel,
-		available,
-		status: inferredStatus,
-		workingModel: available ? responseModel ?? previous?.workingModel : previous?.workingModel,
-		rateLimitedModel: limited ? responseModel ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
-		checkedModels: previous?.checkedModels,
-		totalModels: previous?.totalModels,
-		quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
-		rolling: rolling.window ?? previous?.rolling,
-		weekly: weekly.window ?? previous?.weekly,
-		monthly: monthly.window ?? previous?.monthly,
-		...retryResetFields(limited, retryAfterSeconds, previous),
-		source: "headers",
-		errorMessage: limited
-			? retryAfterSeconds > 0
-				? `Rate limited; retry after ${retryAfterSeconds}s`
-				: inferredStatus === "credits_error" ? "Quota exhausted" : "Rate limited"
-			: inferredStatus === "error"
-				? `HTTP ${status}`
-				: undefined,
+		hasSignal,
+		usage: {
+			provider: config.provider,
+			label: config.label,
+			shortLabel: config.shortLabel,
+			available,
+			status: inferredStatus,
+			workingModel: available ? responseModel ?? previous?.workingModel : previous?.workingModel,
+			rateLimitedModel: limited ? responseModel ?? previous?.rateLimitedModel : previous?.rateLimitedModel,
+			checkedModels: previous?.checkedModels,
+			totalModels: previous?.totalModels,
+			quotaSource: hasQuotaHeaders ? "response headers" : previous?.quotaSource,
+			rolling: rolling.window ?? previous?.rolling,
+			weekly: weekly.window ?? previous?.weekly,
+			monthly: monthly.window ?? previous?.monthly,
+			...retryResetFields(limited, retryAfterSeconds, previous),
+			source: "headers",
+			errorMessage: limited
+				? retryAfterSeconds > 0
+					? `Rate limited; retry after ${retryAfterSeconds}s`
+					: inferredStatus === "credits_error" ? "Quota exhausted" : "Rate limited"
+				: inferredStatus === "error"
+					? `HTTP ${status}`
+					: undefined,
+		},
 	};
+}
+
+// ───────── Usage Endpoint ─────────
+
+export type SubscriptionUsageApiResult =
+	| { success: true; usage: SubscriptionUsage }
+	| { success: false; error: string };
+
+/**
+ * Read a provider's dedicated quota endpoint (no model request, no usage billing).
+ * Returns quota windows mapped by the provider-specific parser.
+ */
+export async function checkSubscriptionUsageApi(
+	config: SubscriptionProviderConfig,
+	auth: BoundApiKey,
+	signal?: AbortSignal,
+): Promise<SubscriptionUsageApiResult> {
+	if (!config.usageApi) return { success: false, error: "no usage endpoint configured" };
+	try {
+		const response = await fetchSameOriginWithTimeout(config.usageApi.url, auth.baseUrl, {
+			headers: {
+				"Authorization": `Bearer ${auth.apiKey}`,
+				"Accept": "application/json",
+				"User-Agent": piUsageUserAgent(),
+			},
+		}, signal);
+
+		if (!response.ok) {
+			return { success: false, error: `${config.label} usage API: ${await readErrorDetail(response, signal)}` };
+		}
+
+		const windows = config.usageApi.parse(await readResponseJson(response, signal));
+		if (!windows) {
+			return { success: false, error: `${config.label} usage API: no usage windows` };
+		}
+
+		const exhausted = [windows.rolling, windows.weekly, windows.monthly]
+			.some((window) => (window?.usedPercent ?? 0) >= 100 || (window?.remainingPercent ?? 100) <= 0);
+		return {
+			success: true,
+			usage: {
+				provider: config.provider,
+				label: config.label,
+				shortLabel: config.shortLabel,
+				available: !exhausted,
+				status: exhausted ? "rate_limited" : "available",
+				quotaSource: "usage api",
+				rolling: windows.rolling,
+				weekly: windows.weekly,
+				monthly: windows.monthly,
+				source: "usage_api",
+			},
+		};
+	} catch (e: unknown) {
+		return { success: false, error: errorText(e) };
+	}
 }
 
 // ───────── Model Probing ─────────
@@ -293,7 +370,18 @@ export async function checkSubscriptionProviderUsage(
 	});
 	if (!auth) return emptyUsage();
 
-	return probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
+	// Dedicated quota endpoint first (no model request, no usage billing).
+	let usageApiError: string | undefined;
+	if (config.usageApi) {
+		const apiResult = await checkSubscriptionUsageApi(config, auth, signal);
+		if (apiResult.success) return apiResult.usage;
+		if (signal?.aborted) {
+			return { ...emptyUsage(), status: "error", source: "usage_api", error: apiResult.error };
+		}
+		usageApiError = apiResult.error;
+	}
+
+	const probeResult = await probeProviderUsage<SubscriptionProbeModel, SubscriptionUsage>({
 		label: config.label,
 		models: await getSubscriptionCheckModels(config, preferredModel, ctx, auth.baseUrl),
 		signal,
@@ -303,7 +391,7 @@ export async function checkSubscriptionProviderUsage(
 			body: JSON.stringify(probeBody(model)),
 			signal: probeSignal,
 		}),
-		parseHeaders: (headers, status, modelId) => parseSubscriptionUsageHeaders(config, headers, status, modelId),
+		parseHeaders: (headers, status, modelId) => parseSubscriptionUsageHeaders(config, headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			isSubscriptionModelUnavailable(message)
 				? "unavailable"
@@ -314,4 +402,10 @@ export async function checkSubscriptionProviderUsage(
 					: "failed",
 		emptyUsage,
 	});
+	if (usageApiError && probeResult.status === "error") {
+		const mergedError = `${usageApiError}; fallback probe: ${probeResult.errorMessage ?? probeResult.error ?? "failed"}`;
+		probeResult.errorMessage = mergedError;
+		probeResult.error = mergedError;
+	}
+	return probeResult;
 }

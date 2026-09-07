@@ -65,7 +65,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test index.test.ts",
+    "test": "tsx --test index.test.ts refresh.test.ts",
     "prepublishOnly": "npm run check && npm test",
     "pack:dry-run": "npm pack --dry-run"
   },

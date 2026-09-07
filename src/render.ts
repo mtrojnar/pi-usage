@@ -15,6 +15,7 @@ import {
 	formatDuration,
 	formatResetTime,
 	progressBar,
+	quotaWindowIsExpired,
 	statusIcon,
 	truncate,
 	usageColor,
@@ -87,14 +88,16 @@ function windowLines(
 	const lines: string[] = [];
 	for (const window of windows) {
 		if (window.usedPercent === undefined) continue;
-		const percent = `${window.usedPercent.toFixed(0)}%${percentSuffix}`;
-		const remaining = window.remainingPercent !== undefined ? ` / ${window.remainingPercent.toFixed(0)}% left` : "";
-		const reset = resetPhrase(window.resetAt, window.resetAfterSeconds);
+		const expired = quotaWindowIsExpired(window);
+		const percent = expired ? `--${percentSuffix}` : `${window.usedPercent.toFixed(0)}%${percentSuffix}`;
+		const remaining = !expired && window.remainingPercent !== undefined ? ` / ${window.remainingPercent.toFixed(0)}% left` : "";
+		const reset = expired ? " stale" : resetPhrase(window.resetAt, window.resetAfterSeconds);
+		const bar = progressBar(expired ? 0 : window.usedPercent);
 		if (useColor) {
-			const color = usageColor(window.usedPercent);
-			lines.push(`  ${window.label.padEnd(pad)} ${fmt(color, progressBar(window.usedPercent))} ${fmt(color, percent)}${fmt("dim", remaining + reset)}`);
+			const color = expired ? "dim" : usageColor(window.usedPercent);
+			lines.push(`  ${window.label.padEnd(pad)} ${fmt(color, bar)} ${fmt(color, percent)}${fmt("dim", remaining + reset)}`);
 		} else {
-			lines.push(`  ${window.label.padEnd(pad)} ${progressBar(window.usedPercent)} ${percent}${remaining}${reset}`);
+			lines.push(`  ${window.label.padEnd(pad)} ${bar} ${percent}${remaining}${reset}`);
 		}
 	}
 	return lines;
@@ -338,6 +341,7 @@ interface FooterWindow {
 
 /** Compact "42%w/2h" summary for one usage window. */
 function footerWindowSummary(window: FooterWindow & { usedPercent: number }, theme: Theme): string {
+	if (quotaWindowIsExpired(window)) return theme.fg("dim", `--${window.suffix ?? ""}`);
 	const reset = resetDuration(window.resetAt, window.resetAfterSeconds);
 	const used = `${Math.round(clampPercent(window.usedPercent))}%${window.suffix ?? ""}`;
 	return theme.fg(footerUsageColor(window.usedPercent), reset ? `${used}/${reset}` : used);

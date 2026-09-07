@@ -19,6 +19,12 @@ export function formatDuration(seconds: number): string {
 	return `${Math.round(seconds / 86400 * 10) / 10}d`;
 }
 
+/** Cached quota data expires at its reset timestamp (Unix seconds), not before. */
+export function quotaWindowIsExpired(window?: { resetAt?: number }): boolean {
+	const resetAt = window?.resetAt;
+	return resetAt !== undefined && resetAt > 0 && resetAt * 1000 <= Date.now();
+}
+
 export function formatResetTime(unixTsSec: number): string {
 	const diff = unixTsSec * 1000 - Date.now();
 	if (diff <= 0) return "now";

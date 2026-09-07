@@ -147,6 +147,12 @@ export interface SubscriptionQuotaWindow {
 	resetAt?: number;
 }
 
+export interface UsageApiWindows {
+	rolling?: SubscriptionQuotaWindow;
+	weekly?: SubscriptionQuotaWindow;
+	monthly?: SubscriptionQuotaWindow;
+}
+
 export interface SubscriptionUsage {
 	provider: string;
 	label: string;
@@ -163,7 +169,7 @@ export interface SubscriptionUsage {
 	monthly?: SubscriptionQuotaWindow;
 	retryAfterSeconds?: number;
 	retryResetAt?: number;
-	source?: "probe" | "headers";
+	source?: "usage_api" | "probe" | "headers";
 	errorMessage?: string;
 	error?: string;
 }

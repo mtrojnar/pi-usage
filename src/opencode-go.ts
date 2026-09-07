@@ -21,6 +21,7 @@ import {
 	type QuotaWindowKind,
 	type SubscriptionProviderConfig,
 } from "./subscription-probe.ts";
+import { hasHeaderPrefix } from "./headers.ts";
 
 // ───────── Constants ─────────
 
@@ -125,6 +126,17 @@ export function hasOpenCodeGoQuotaHeaders(headers: Record<string, string>): bool
 	return getOpenCodeGoQuotaHeaderWindows(headers).length > 0;
 }
 
+/**
+ * True when the response carried real OpenCode Go signal (quota/provider
+ * headers or a limit error) — as opposed to a bare successful response that
+ * only confirms the model works. Only real signal should mark quota
+ * freshness for deferring proactive refreshes.
+ */
+export function hasOpenCodeGoHeaderSignal(headers: Record<string, string>, status: number): boolean {
+	const prefixes = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes ?? [OPENCODE_GO_PROVIDER];
+	return prefixes.some((prefix) => hasHeaderPrefix(headers, `x-${prefix}-`)) || status === 429 || status === 402;
+}
+
 /** Keep an exhausted refresh limited when its quota survives a concurrent merge. */
 export function reconcileOpenCodeGoRefresh(
 	result: OpenCodeGoUsage,
@@ -149,7 +161,7 @@ export function parseOpenCodeGoUsageHeaders(
 
 	// Fresh quota headers supersede any stale dashboard error.
 	const hasQuotaHeaders = hasOpenCodeGoQuotaHeaders(headers);
-	return { ...parsed, quotaError: hasQuotaHeaders ? undefined : previous?.quotaError };
+	return { ...parsed.usage, quotaError: hasQuotaHeaders ? undefined : previous?.quotaError };
 }
 
 // ───────── Dashboard Quota Fetch ─────────
