@@ -1,6 +1,6 @@
 {
   "name": "@mtrojnar/pi-usage",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Usage, rate-limit, and spending monitor for pi coding agent: Codex, Claude, Copilot, OpenCode, and OpenRouter daily spend, key budgets, and account credits.",
   "license": "MIT",
   "author": "timm-u and Michał Trojnara",
