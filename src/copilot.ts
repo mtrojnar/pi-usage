@@ -5,6 +5,7 @@ import type {
 	CopilotUsage,
 	CopilotUsageWindowKey,
 	GoModelStatus,
+	PassiveUsageUpdate,
 	SelectedModel,
 	SubscriptionProbeApi,
 	UsageContext,
@@ -177,28 +178,18 @@ function applyWindow(
 	usage[key] = value;
 }
 
-/**
- * True when the response carried real Copilot rate-limit signal (quota
- * headers or a limit error) — as opposed to a bare successful response that
- * only confirms the model works. Only real signal should mark quota
- * freshness for deferring proactive refreshes.
- */
-export function hasCopilotHeaderSignal(headers: Record<string, string>, status: number): boolean {
-	return hasHeaderPrefix(headers, "x-ratelimit-") || hasHeaderPrefix(headers, "x-copilot-")
-		|| status === 429 || status === 402;
-}
-
 export function parseCopilotUsageHeaders(
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: CopilotUsage,
-): CopilotUsage | undefined {
+): PassiveUsageUpdate<CopilotUsage> | undefined {
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
 	// Bare 2xx responses still parse for status/model recovery, but carry no
 	// quota data and must not count as freshness for deferring refreshes.
-	const hasPassiveSignal = hasCopilotHeaderSignal(headers, status) || (status >= 200 && status < 300 && !!modelId);
-	if (!hasPassiveSignal) return undefined;
+	const hasSignal = hasHeaderPrefix(headers, "x-ratelimit-") || hasHeaderPrefix(headers, "x-copilot-")
+		|| status === 429 || status === 402;
+	if (!hasSignal && !(status >= 200 && status < 300 && !!modelId)) return undefined;
 
 	const inferredStatus: GoModelStatus = status === 429
 		? "rate_limited"
@@ -233,7 +224,7 @@ export function parseCopilotUsageHeaders(
 	applyWindow(usage, "requests", parseCopilotWindowFromPrefix(headers, "x-ratelimit", resource), previous);
 	applyWindow(usage, "premiumRequests", parseCopilotWindowFromPrefix(headers, "x-copilot-premium-requests", "premium"), previous);
 
-	return usage;
+	return { usage, hasSignal };
 }
 
 // ───────── Model Probing ─────────
@@ -361,7 +352,7 @@ export async function checkCopilotUsage(ctx: Pick<UsageContext, "modelRegistry">
 			body: JSON.stringify(copilotProbeBody(model)),
 			signal: probeSignal,
 		}),
-		parseHeaders: parseCopilotUsageHeaders,
+		parseHeaders: (headers, status, modelId) => parseCopilotUsageHeaders(headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			status === 429 || isCopilotQuotaMessage(message)
 				? status === 402 ? "credits_error" : "rate_limited"

@@ -41,14 +41,13 @@ import { quotaWindowIsExpired } from "./src/format.ts";
 import { unrefTimer } from "./src/http.ts";
 import { mergeConcurrentFields, runIsolatedTask } from "./src/concurrent.ts";
 import { getCodexToken, checkCodexUsage, checkCodexUsageFromUsageApi, parseCodexUsageHeaders } from "./src/codex.ts";
-import { getAnthropicAuth, checkAnthropicUsage, hasAnthropicHeaderSignal, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
-import { getCopilotAuth, checkCopilotUsage, hasCopilotHeaderSignal, parseCopilotUsageHeaders } from "./src/copilot.ts";
+import { getAnthropicAuth, checkAnthropicUsage, parseAnthropicUsageHeaders } from "./src/anthropic.ts";
+import { getCopilotAuth, checkCopilotUsage, parseCopilotUsageHeaders } from "./src/copilot.ts";
 import {
 	checkOpenCodeGoUsage,
 	getOpenCodeAuth,
 	getOpenCodeGoQuotaHeaderWindows,
 	hasCompleteGoQuotaData,
-	hasOpenCodeGoHeaderSignal,
 	parseOpenCodeGoUsageHeaders,
 	reconcileOpenCodeGoRefresh,
 } from "./src/opencode-go.ts";
@@ -610,8 +609,8 @@ export default function (pi: ExtensionAPI) {
 		if (provider === OPENAI_CODEX_PROVIDER || hasHeaderPrefix(event.headers, "x-codex-")) {
 			const parsed = parseCodexUsageHeaders(event.headers, event.status, codexUsage);
 			if (parsed) {
-				codexUsage = normalizeCodexResetTimes(parsed);
-				markPassiveUpdate(OPENAI_CODEX_PROVIDER);
+				codexUsage = normalizeCodexResetTimes(parsed.usage);
+				markPassiveUpdate(OPENAI_CODEX_PROVIDER, parsed.hasSignal);
 				updated = true;
 			}
 		}
@@ -619,10 +618,10 @@ export default function (pi: ExtensionAPI) {
 		if (provider === ANTHROPIC_PROVIDER) {
 			const parsed = parseAnthropicUsageHeaders(event.headers, event.status, modelId, anthropicUsage);
 			if (parsed) {
-				anthropicUsage = normalizeAnthropicResetTimes(parsed);
+				anthropicUsage = normalizeAnthropicResetTimes(parsed.usage);
 				// Bare successful responses carry no quota data; only real signal
 				// counts as freshness for deferring proactive refreshes.
-				markPassiveUpdate(ANTHROPIC_PROVIDER, hasAnthropicHeaderSignal(event.headers, event.status));
+				markPassiveUpdate(ANTHROPIC_PROVIDER, parsed.hasSignal);
 				updated = true;
 			}
 		}
@@ -630,8 +629,8 @@ export default function (pi: ExtensionAPI) {
 		if (provider === GITHUB_COPILOT_PROVIDER) {
 			const parsed = parseCopilotUsageHeaders(event.headers, event.status, modelId, copilotUsage);
 			if (parsed) {
-				copilotUsage = normalizeCopilotResetTimes(parsed);
-				markPassiveUpdate(GITHUB_COPILOT_PROVIDER, hasCopilotHeaderSignal(event.headers, event.status));
+				copilotUsage = normalizeCopilotResetTimes(parsed.usage);
+				markPassiveUpdate(GITHUB_COPILOT_PROVIDER, parsed.hasSignal);
 				updated = true;
 			}
 		}
@@ -639,8 +638,8 @@ export default function (pi: ExtensionAPI) {
 		if (provider === OPENCODE_GO_PROVIDER || hasHeaderPrefix(event.headers, "x-opencode-go-")) {
 			const parsed = parseOpenCodeGoUsageHeaders(event.headers, event.status, modelId, goUsage);
 			if (parsed) {
-				goUsage = normalizeSubscriptionResetTimes(parsed);
-				markPassiveUpdate(OPENCODE_GO_PROVIDER, hasOpenCodeGoHeaderSignal(event.headers, event.status));
+				goUsage = normalizeSubscriptionResetTimes(parsed.usage);
+				markPassiveUpdate(OPENCODE_GO_PROVIDER, parsed.hasSignal);
 				for (const window of getOpenCodeGoQuotaHeaderWindows(event.headers)) {
 					markPassiveUpdate(goQuotaPassiveKey(window));
 				}

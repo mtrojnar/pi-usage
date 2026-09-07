@@ -1,6 +1,7 @@
 import type {
 	BoundApiKey,
 	GoModelStatus,
+	PassiveUsageUpdate,
 	SelectedModel,
 	SubscriptionProbeApi,
 	SubscriptionProbeModel,
@@ -172,20 +173,13 @@ function firstPrefixedHeader(headers: Record<string, string>, prefixes: string[]
 	return undefined;
 }
 
-export interface SubscriptionHeaderParse {
-	usage: SubscriptionUsage;
-	/** True when the response carried real provider signal (quota/provider headers, 429/402) —
-	 *  as opposed to a bare successful response that only confirms the model works. */
-	hasSignal: boolean;
-}
-
 export function parseSubscriptionUsageHeaders(
 	config: SubscriptionProviderConfig,
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: SubscriptionUsage,
-): SubscriptionHeaderParse | undefined {
+): PassiveUsageUpdate<SubscriptionUsage> | undefined {
 	const prefixes = config.quotaHeaderPrefixes ?? [config.provider];
 	const hasProviderHeaders = prefixes.some((prefix) => hasHeaderPrefix(headers, `x-${prefix}-`));
 	const statusHeader = firstPrefixedHeader(headers, prefixes, "status");

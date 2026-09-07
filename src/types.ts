@@ -147,6 +147,12 @@ export interface SubscriptionQuotaWindow {
 	resetAt?: number;
 }
 
+/** A passive state update and whether it carries signal that defers auto checks. */
+export interface PassiveUsageUpdate<T> {
+	usage: T;
+	hasSignal: boolean;
+}
+
 export interface UsageApiWindows {
 	rolling?: SubscriptionQuotaWindow;
 	weekly?: SubscriptionQuotaWindow;

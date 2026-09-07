@@ -5,6 +5,7 @@ import type {
 	OpenAIUsageResponse,
 	UsageContext,
 	OpenAIUsageWindow,
+	PassiveUsageUpdate,
 } from "./types.ts";
 import {
 	CODEX_PROBE_MODEL,
@@ -150,7 +151,7 @@ export function parseCodexUsageHeaders(
 	headers: Record<string, string>,
 	status: number = 200,
 	previous?: CodexUsage,
-): CodexUsage | undefined {
+): PassiveUsageUpdate<CodexUsage> | undefined {
 	const getHeader = (name: string): string | undefined => headerValue(headers, name);
 	if (!hasHeaderPrefix(headers, "x-codex-") && status !== 429) return undefined;
 
@@ -208,7 +209,7 @@ export function parseCodexUsageHeaders(
 		usage.primaryResetAfterSeconds = retryAfterSeconds;
 		if (getHeader("x-codex-primary-reset-at") === undefined) usage.primaryResetAt = 0;
 	}
-	return usage;
+	return { usage, hasSignal: true };
 }
 
 // ───────── Probe Fallback ─────────
@@ -247,12 +248,12 @@ async function checkCodexUsageWithProbe(token: string, accountId: string, signal
 
 		if (response.ok) {
 			await cancelResponseBody(response);
-			return { ...(parseCodexUsageHeaders(headers, response.status) ?? CODEX_USAGE_DEFAULTS), source: "probe" };
+			return { ...(parseCodexUsageHeaders(headers, response.status)?.usage ?? CODEX_USAGE_DEFAULTS), source: "probe" };
 		}
 
 		if (response.status === 429) {
 			// parseCodexUsageHeaders always yields a result for 429 responses.
-			const usage = parseCodexUsageHeaders(headers, response.status) ?? { ...CODEX_USAGE_DEFAULTS };
+			const usage = parseCodexUsageHeaders(headers, response.status)?.usage ?? { ...CODEX_USAGE_DEFAULTS };
 			usage.source = "probe";
 			usage.error = "Rate limited (429)";
 			applyResetsAtFromBody(usage, await readResponseText(response, signal).catch(() => ""));

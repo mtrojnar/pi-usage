@@ -3,6 +3,7 @@ import type {
 	AnthropicUsage,
 	AnthropicUsageWindow,
 	GoModelStatus,
+	PassiveUsageUpdate,
 	SelectedModel,
 	UsageContext,
 } from "./types.ts";
@@ -99,27 +100,17 @@ function parseUnifiedWindow(headers: Record<string, string>, key: "5h" | "7d"): 
 	};
 }
 
-/**
- * True when the response carried real Anthropic rate-limit signal (unified
- * rate-limit headers or a limit error) — as opposed to a bare successful
- * response that only confirms the model works. Only real signal should mark
- * quota freshness for deferring proactive refreshes.
- */
-export function hasAnthropicHeaderSignal(headers: Record<string, string>, status: number): boolean {
-	return hasHeaderPrefix(headers, "anthropic-ratelimit-unified-") || status === 429 || status === 402;
-}
-
 export function parseAnthropicUsageHeaders(
 	headers: Record<string, string>,
 	status: number,
 	modelId?: string,
 	previous?: AnthropicUsage,
-): AnthropicUsage | undefined {
+): PassiveUsageUpdate<AnthropicUsage> | undefined {
 	const retryAfterSeconds = parseRetryAfterSeconds(headerValue(headers, "retry-after"));
 	// Bare 2xx responses still parse for status/model recovery, but carry no
 	// quota data and must not count as freshness for deferring refreshes.
-	const hasPassiveSignal = hasAnthropicHeaderSignal(headers, status) || (status >= 200 && status < 300 && !!modelId);
-	if (!hasPassiveSignal) return undefined;
+	const hasSignal = hasHeaderPrefix(headers, "anthropic-ratelimit-unified-") || status === 429 || status === 402;
+	if (!hasSignal && !(status >= 200 && status < 300 && !!modelId)) return undefined;
 
 	const parsedFiveHour = parseUnifiedWindow(headers, "5h");
 	const parsedWeekly = parseUnifiedWindow(headers, "7d");
@@ -134,7 +125,7 @@ export function parseAnthropicUsageHeaders(
 	const available = inferredStatus === "available";
 	const rateLimited = inferredStatus === "rate_limited";
 
-	return {
+	const usage: AnthropicUsage = {
 		available,
 		status: inferredStatus,
 		authType: previous?.authType,
@@ -152,6 +143,7 @@ export function parseAnthropicUsageHeaders(
 				? `HTTP ${status}`
 				: undefined,
 	};
+	return { usage, hasSignal };
 }
 
 // ───────── Usage Endpoint (Claude Pro/Max OAuth) ─────────
@@ -330,7 +322,7 @@ async function checkAnthropicUsageWithProbe(ctx: Pick<UsageContext, "modelRegist
 			body: JSON.stringify(anthropicProbeBody(auth, model)),
 			signal: probeSignal,
 		}),
-		parseHeaders: parseAnthropicUsageHeaders,
+		parseHeaders: (headers, status, modelId) => parseAnthropicUsageHeaders(headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			status === 429 ? "rate_limited" : isAnthropicModelUnavailable(message) ? "unavailable" : "failed",
 		emptyUsage: () => ({ available: false, status: "error", authType: auth.type }),

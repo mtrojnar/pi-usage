@@ -76,13 +76,11 @@ import {
 import {
 	checkAnthropicUsage,
 	checkAnthropicUsageFromUsageApi,
-	hasAnthropicHeaderSignal,
 	isAnthropicModelUnavailable,
 	parseAnthropicUsageHeaders,
 } from "./src/anthropic.ts";
 import {
 	getCopilotBaseUrl,
-	hasCopilotHeaderSignal,
 	isCopilotModelUnavailable,
 	isCopilotQuotaMessage,
 	normalizeCopilotDomain,
@@ -91,7 +89,6 @@ import {
 import {
 	getOpenCodeGoQuotaHeaderWindows,
 	hasCompleteGoQuotaData,
-	hasOpenCodeGoHeaderSignal,
 	hasOpenCodeGoQuotaHeaders,
 	parseOpenCodeGoDashboardUsage,
 	parseOpenCodeGoUsageHeaders,
@@ -1040,6 +1037,37 @@ describe("resolveConfigValue", () => {
 
 // ───────── passive header parsing ─────────
 
+describe("passive parser contract", () => {
+	const providers = [
+		{ name: "Codex", parse: (headers: Record<string, string>, status: number) => parseCodexUsageHeaders(headers, status), header: "x-codex-primary-used-percent", bareRecovery: false },
+		{ name: "Anthropic", parse: parseAnthropicUsageHeaders, header: "anthropic-ratelimit-unified-5h-utilization", bareRecovery: true },
+		{ name: "Copilot", parse: parseCopilotUsageHeaders, header: "x-ratelimit-remaining", bareRecovery: true },
+		{ name: "Go", parse: parseOpenCodeGoUsageHeaders, header: "x-opencode-go-rolling-used-percent", bareRecovery: true },
+		{ name: "subscription", parse: (headers: Record<string, string>, status: number, modelId?: string) => parseSubscriptionUsageHeaders({ provider: "demo", label: "Demo", shortLabel: "Demo" }, headers, status, modelId), header: "x-demo-rolling-used-percent", bareRecovery: true },
+	];
+	for (const provider of providers) {
+		it(`${provider.name} returns usage and freshness together`, () => {
+			const parsed = provider.parse({ [provider.header]: "1" }, 200, "test-model");
+			assert.ok(parsed);
+			assert.equal(parsed.hasSignal, true);
+			assert.equal(parsed.usage.source, "headers");
+		});
+		it(`${provider.name} distinguishes availability from quota signals`, () => {
+			const parsed = provider.parse({}, 200, "test-model");
+			if (provider.bareRecovery) {
+				assert.ok(parsed);
+				assert.equal(parsed.hasSignal, false);
+			} else {
+				assert.equal(parsed, undefined);
+			}
+			assert.equal(provider.parse({}, 500, "test-model"), undefined);
+		});
+		it(`${provider.name} reports bare HTTP 429 as a signal`, () => {
+			assert.equal(provider.parse({}, 429)?.hasSignal, true);
+		});
+	}
+});
+
 describe("parseCodexUsageHeaders", () => {
 	it("parses Codex quota headers", () => {
 		const usage = parseCodexUsageHeaders({
@@ -1053,7 +1081,7 @@ describe("parseCodexUsageHeaders", () => {
 			"x-codex-secondary-reset-at": "2000000000",
 			"x-codex-credits-has-credits": "true",
 			"x-codex-credits-balance": "$5.00",
-		});
+		})?.usage;
 
 		assert.ok(usage);
 		assert.equal(usage.planType, "plus");
@@ -1070,7 +1098,7 @@ describe("parseCodexUsageHeaders", () => {
 		const usage = parseCodexUsageHeaders({
 			"x-codex-active-limit": "premium",
 			"retry-after": "30",
-		}, 429);
+		}, 429)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.activeLimit, "premium");
 		assert.equal(usage.rateLimited, true);
@@ -1086,7 +1114,7 @@ describe("parseCodexUsageHeaders", () => {
 			secondaryUsedPercent: 55,
 			primaryResetAt: 2_000_000_000,
 		});
-		const usage = parseCodexUsageHeaders({ "x-codex-active-limit": "normal" }, 200, previous);
+		const usage = parseCodexUsageHeaders({ "x-codex-active-limit": "normal" }, 200, previous)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.planType, "plus");
 		assert.equal(usage.primaryUsedPercent, 42);
@@ -1099,7 +1127,7 @@ describe("parseCodexUsageHeaders", () => {
 			{ "x-codex-primary-used-percent": "43" },
 			200,
 			makeCodexUsage({ activeLimit: "premium", rateLimited: true, primaryUsedPercent: 42 }),
-		);
+		)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.activeLimit, "premium");
 		assert.equal(usage.rateLimited, false);
@@ -1116,7 +1144,7 @@ describe("parseCodexUsageHeaders", () => {
 			"x-codex-primary-reset-after-seconds": "30",
 			"x-codex-secondary-reset-after-seconds": "60",
 			"x-codex-code-review-reset-after-seconds": "90",
-		}, 200, previous);
+		}, 200, previous)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.primaryResetAt, 0);
 		assert.equal(usage.secondaryResetAt, 0);
@@ -1128,7 +1156,7 @@ describe("parseCodexUsageHeaders", () => {
 			{ "retry-after": "30" },
 			429,
 			makeCodexUsage({ primaryResetAt: 2_000_000_000 }),
-		);
+		)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.primaryResetAfterSeconds, 30);
 		assert.equal(usage.primaryResetAt, 0);
@@ -1142,7 +1170,7 @@ describe("parseCodexUsageHeaders", () => {
 				primaryResetAfterSeconds: 3600,
 				primaryResetAt: 2_000_000_000,
 			}),
-		);
+		)?.usage;
 		assert.ok(usage);
 		assert.equal(usage.primaryResetAfterSeconds, 0);
 		assert.equal(usage.primaryResetAt, 0);
@@ -1210,7 +1238,7 @@ describe("parseAnthropicUsageHeaders", () => {
 			"anthropic-ratelimit-unified-7d-utilization": "0.03",
 			"anthropic-ratelimit-unified-7d-reset": "2000500000",
 			"anthropic-ratelimit-unified-status": "allowed",
-		}, 200, "claude-haiku-4-5");
+		}, 200, "claude-haiku-4-5")?.usage;
 
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
@@ -1226,14 +1254,14 @@ describe("parseAnthropicUsageHeaders", () => {
 		const usage = parseAnthropicUsageHeaders({
 			"anthropic-ratelimit-unified-5h-utilization": "1",
 			"anthropic-ratelimit-unified-status": "rejected",
-		}, 200, "claude-opus-4-8");
+		}, 200, "claude-opus-4-8")?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "rate_limited");
 		assert.equal(usage.fiveHour?.utilizationPercent, 100);
 	});
 
 	it("infers Anthropic rate limit from 429 retry-after", () => {
-		const usage = parseAnthropicUsageHeaders({ "retry-after": "30" }, 429, "claude-sonnet-4-5");
+		const usage = parseAnthropicUsageHeaders({ "retry-after": "30" }, 429, "claude-sonnet-4-5")?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "rate_limited");
 		assert.equal(usage.rateLimitedModel, "claude-sonnet-4-5");
@@ -1247,7 +1275,7 @@ describe("parseAnthropicUsageHeaders", () => {
 			status: "rate_limited",
 			fiveHour: { utilizationPercent: 90 },
 			retryAfterSeconds: 30,
-		});
+		})?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.fiveHour?.utilizationPercent, 90);
@@ -1259,10 +1287,10 @@ describe("parseAnthropicUsageHeaders", () => {
 	});
 
 	it("distinguishes real Anthropic signal from bare successful responses", () => {
-		assert.equal(hasAnthropicHeaderSignal({ "anthropic-ratelimit-unified-status": "allowed" }, 200), true);
-		assert.equal(hasAnthropicHeaderSignal({}, 429), true);
-		assert.equal(hasAnthropicHeaderSignal({}, 402), true);
-		assert.equal(hasAnthropicHeaderSignal({ server: "test" }, 200), false);
+		assert.equal(parseAnthropicUsageHeaders({ "anthropic-ratelimit-unified-status": "allowed" }, 200)?.hasSignal, true);
+		assert.equal(parseAnthropicUsageHeaders({}, 429)?.hasSignal, true);
+		assert.equal(parseAnthropicUsageHeaders({}, 402)?.hasSignal, true);
+		assert.equal(parseAnthropicUsageHeaders({ server: "test" }, 200, "claude-test")?.hasSignal, false);
 	});
 });
 
@@ -1334,7 +1362,7 @@ describe("parseCopilotUsageHeaders", () => {
 			"x-ratelimit-used": "20",
 			"x-ratelimit-reset": String(reset),
 			"x-ratelimit-resource": "copilot",
-		}, 200, "gpt-5-mini");
+		}, 200, "gpt-5-mini")?.usage;
 
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
@@ -1350,7 +1378,7 @@ describe("parseCopilotUsageHeaders", () => {
 			"x-copilot-premium-requests-used-percent": "40",
 			"x-copilot-premium-requests-remaining-percent": "60",
 			"x-copilot-premium-requests-reset-after-seconds": "120",
-		}, 200, "gpt-5-mini");
+		}, 200, "gpt-5-mini")?.usage;
 
 		assert.ok(usage);
 		assert.equal(usage.premiumRequests?.usedPercent, 40);
@@ -1359,7 +1387,7 @@ describe("parseCopilotUsageHeaders", () => {
 	});
 
 	it("infers Copilot rate limit from 429 retry-after", () => {
-		const usage = parseCopilotUsageHeaders({ "retry-after": "45" }, 429, "gpt-5-mini");
+		const usage = parseCopilotUsageHeaders({ "retry-after": "45" }, 429, "gpt-5-mini")?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "rate_limited");
 		assert.equal(usage.rateLimitedModel, "gpt-5-mini");
@@ -1373,7 +1401,7 @@ describe("parseCopilotUsageHeaders", () => {
 			status: "rate_limited",
 			premiumRequests: { usedPercent: 70, remainingPercent: 30 },
 			retryAfterSeconds: 30,
-		});
+		})?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.premiumRequests?.usedPercent, 70);
@@ -1385,11 +1413,11 @@ describe("parseCopilotUsageHeaders", () => {
 	});
 
 	it("distinguishes real Copilot signal from bare successful responses", () => {
-		assert.equal(hasCopilotHeaderSignal({ "x-ratelimit-remaining": "10" }, 200), true);
-		assert.equal(hasCopilotHeaderSignal({ "x-copilot-quota": "1" }, 200), true);
-		assert.equal(hasCopilotHeaderSignal({}, 429), true);
-		assert.equal(hasCopilotHeaderSignal({}, 402), true);
-		assert.equal(hasCopilotHeaderSignal({ server: "test" }, 200), false);
+		assert.equal(parseCopilotUsageHeaders({ "x-ratelimit-remaining": "10" }, 200)?.hasSignal, true);
+		assert.equal(parseCopilotUsageHeaders({ "x-copilot-quota": "1" }, 200)?.hasSignal, true);
+		assert.equal(parseCopilotUsageHeaders({}, 429)?.hasSignal, true);
+		assert.equal(parseCopilotUsageHeaders({}, 402)?.hasSignal, true);
+		assert.equal(parseCopilotUsageHeaders({ server: "test" }, 200, "gpt-test")?.hasSignal, false);
 	});
 });
 
@@ -1714,7 +1742,7 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 			"x-opencode-go-rolling-used-percent": "25",
 			"x-opencode-go-weekly-used-percent": "50",
 			"x-opencode-go-monthly-reset-after-seconds": "3600",
-		}, 200);
+		}, 200)?.usage;
 
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
@@ -1727,7 +1755,7 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 	});
 
 	it("infers rate limited Go status from 429", () => {
-		const usage = parseOpenCodeGoUsageHeaders({ "retry-after": "15" }, 429, "glm-5.1");
+		const usage = parseOpenCodeGoUsageHeaders({ "retry-after": "15" }, 429, "glm-5.1")?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "rate_limited");
 		assert.equal(usage.rateLimitedModel, "glm-5.1");
@@ -1739,7 +1767,7 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 			available: false,
 			status: "rate_limited",
 			rolling: { usedPercent: 20, remainingPercent: 80 },
-		}));
+		}))?.usage;
 		assert.ok(usage);
 		assert.equal(usage.status, "available");
 		assert.equal(usage.workingModel, "glm-5.1");
@@ -1748,7 +1776,7 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 	});
 
 	it("preserves a dashboard quota error on plain availability headers", () => {
-		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }));
+		const usage = parseOpenCodeGoUsageHeaders({}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }))?.usage;
 		assert.ok(usage);
 		assert.equal(usage.quotaError, "boom");
 	});
@@ -1756,16 +1784,16 @@ describe("parseOpenCodeGoUsageHeaders", () => {
 	it("clears a stale quota error when fresh quota headers arrive", () => {
 		const usage = parseOpenCodeGoUsageHeaders({
 			"x-opencode-go-rolling-used-percent": "25",
-		}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }));
+		}, 200, "glm-5.1", makeGoUsage({ quotaError: "boom" }))?.usage;
 		assert.ok(usage);
 		assert.equal(usage.quotaError, undefined);
 	});
 
 	it("distinguishes real Go signal from bare successful responses", () => {
-		assert.equal(hasOpenCodeGoHeaderSignal({ "x-opencode-go-rolling-used-percent": "25" }, 200), true);
-		assert.equal(hasOpenCodeGoHeaderSignal({}, 429), true);
-		assert.equal(hasOpenCodeGoHeaderSignal({}, 402), true);
-		assert.equal(hasOpenCodeGoHeaderSignal({ server: "test" }, 200), false);
+		assert.equal(parseOpenCodeGoUsageHeaders({ "x-opencode-go-rolling-used-percent": "25" }, 200)?.hasSignal, true);
+		assert.equal(parseOpenCodeGoUsageHeaders({}, 429)?.hasSignal, true);
+		assert.equal(parseOpenCodeGoUsageHeaders({}, 402)?.hasSignal, true);
+		assert.equal(parseOpenCodeGoUsageHeaders({ server: "test" }, 200, "glm-test")?.hasSignal, false);
 	});
 });
 
