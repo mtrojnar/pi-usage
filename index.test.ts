@@ -2554,12 +2554,12 @@ describe("configPathCandidates", () => {
 	it("includes XDG_CONFIG_HOME path", () => {
 		process.env.XDG_CONFIG_HOME = "/xdg/config";
 		const result = configPathCandidates("opencode-go.json");
-		assert.ok(result.includes("/xdg/config/opencode/opencode-go.json"));
+		assert.ok(result.includes(path.join("/xdg/config", "opencode", "opencode-go.json")));
 	});
 
 	it("includes ~/.config path", () => {
 		const result = configPathCandidates("opencode-go.json");
-		assert.ok(result.some(p => p.includes("/.config/opencode/opencode-go.json")));
+		assert.ok(result.some(p => p.includes(path.join(".config", "opencode", "opencode-go.json"))));
 	});
 
 	it("deduplicates paths", () => {
@@ -2610,6 +2610,11 @@ describe("getOpenCodeGoQuotaConfig", () => {
 
 describe("validatePrivateConfigFile", () => {
 	it("throws ENOENT for non-existent file", () => {
+		// POSIX permission checks are skipped on Windows by design.
+		if (process.platform === "win32") {
+			assert.equal(validatePrivateConfigFile("/nonexistent/path.json"), undefined);
+			return;
+		}
 		assert.throws(() => validatePrivateConfigFile("/nonexistent/path.json"), /ENOENT/);
 	});
 
