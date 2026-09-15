@@ -1,6 +1,12 @@
 import type { SubscriptionProbeModel } from "./types.ts";
 import type { SubscriptionProviderConfig } from "./subscription-probe.ts";
-import { KIMI_CODING_USAGE_URL } from "./config.ts";
+import { CLINEPASS_USAGE_LIMITS_URL, KIMI_CODING_USAGE_URL } from "./config.ts";
+import {
+	CLINEPASS_AUTH_PROVIDER_IDS,
+	CLINEPASS_ENV_KEYS,
+	CLINEPASS_PROVIDER,
+	parseClinePassUsagePayload,
+} from "./clinepass.ts";
 import { parseKimiUsagePayload } from "./kimi.ts";
 
 function model(
@@ -30,6 +36,17 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		preferredModelIds: ["big-pickle", "deepseek-v4-flash-free", "gpt-5-nano", "claude-haiku-4-5"],
 		documentedModels: OPENCODE_ZEN_MODELS,
 		quotaHeaderPrefixes: ["opencode"],
+	},
+	{
+		provider: CLINEPASS_PROVIDER,
+		label: "ClinePass",
+		shortLabel: "ClinePass",
+		authProviderIds: [...CLINEPASS_AUTH_PROVIDER_IDS],
+		envKeys: [...CLINEPASS_ENV_KEYS],
+		supportedApis: ["openai-completions"],
+		preferredModelIds: ["cline-pass/mimo-v2.5", "cline-pass/deepseek-v4-flash", "cline-pass/qwen3.7-max"],
+		quotaHeaderPrefixes: ["clinepass", "cline-pass", "cline"],
+		usageApi: { url: CLINEPASS_USAGE_LIMITS_URL, parse: parseClinePassUsagePayload },
 	},
 	{
 		provider: "kimi-coding",

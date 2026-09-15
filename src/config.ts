@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import type { OpenCodeGoQuotaConfigState, UsageContext } from "./types.ts";
+import type { OpenCodeGoQuotaConfigState, ProviderDisplayPrefs, UsageContext } from "./types.ts";
+import { DEFAULT_DISPLAY_PREFS } from "./types.ts";
 
 // ───────── Constants ─────────
 
@@ -17,6 +18,7 @@ export const CODEX_PROBE_MODEL = "gpt-5.4-mini";
 export const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const KIMI_CODING_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
+export const CLINEPASS_USAGE_LIMITS_URL = "https://api.cline.bot/api/v1/users/me/plan/usage-limits";
 export const OPENCODE_GO_QUOTA_CONFIG_FILE = path.join("opencode-quota", "opencode-go.json");
 export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace";
 export const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -105,6 +107,89 @@ export function readUsageWidgetSetting(ctx?: UsageContext): boolean | undefined 
 		if (projectValue !== undefined) value = projectValue;
 	}
 	return value;
+}
+
+// ───────── Provider Display Preferences ─────────
+
+/** Normalize a config value to a lowercase provider-name list (array or comma-separated string). */
+export function providerNameList(value: unknown): string[] {
+	const names = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+	const out: string[] = [];
+	for (const name of names) {
+		if (typeof name !== "string") continue;
+		const normalized = name.trim().toLowerCase();
+		if (normalized && !out.includes(normalized)) out.push(normalized);
+	}
+	return out;
+}
+
+function displayPrefsFromConfig(config: Record<string, unknown> | undefined): Partial<ProviderDisplayPrefs> {
+	if (!config) return {};
+	const prefs: Partial<ProviderDisplayPrefs> = {};
+	for (const key of ["hiddenProviders", "visibleProviders", "providerOrder"] as const) {
+		if (config[key] !== undefined) prefs[key] = providerNameList(config[key]);
+	}
+	const hideUnconfigured = parseBoolSetting(config.hideUnconfiguredProviders);
+	if (hideUnconfigured !== undefined) prefs.hideUnconfiguredProviders = hideUnconfigured;
+	const compactWidget = parseBoolSetting(config.compactWidget);
+	if (compactWidget !== undefined) prefs.compactWidget = compactWidget;
+	const showStatusLine = parseBoolSetting(config.showStatusLine);
+	if (showStatusLine !== undefined) prefs.showStatusLine = showStatusLine;
+	if (typeof config.quotaDisplay === "string") {
+		const mode = config.quotaDisplay.trim().toLowerCase();
+		if (mode === "used" || mode === "remaining") prefs.quotaDisplay = mode;
+	}
+	return prefs;
+}
+
+/**
+ * Read provider display preferences from pi-usage.json (global, with
+ * per-key project override after trust). Unset keys fall back to defaults.
+ */
+export function readProviderDisplayPrefs(ctx?: UsageContext): ProviderDisplayPrefs {
+	const merged: ProviderDisplayPrefs = { ...DEFAULT_DISPLAY_PREFS };
+	Object.assign(merged, displayPrefsFromConfig(readJsonObject(usageConfigPath())));
+	const isProjectTrusted = typeof ctx?.isProjectTrusted === "function" && ctx.isProjectTrusted();
+	if (isProjectTrusted && ctx) {
+		Object.assign(merged, displayPrefsFromConfig(readJsonObject(path.join(ctx.cwd, CONFIG_DIR_NAME, USAGE_CONFIG_FILE))));
+	}
+	return merged;
+}
+
+// ───────── Refresh Intervals ─────────
+
+/** Positive integer from a JSON value, or undefined. */
+export function jsonPositiveInt(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+	if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+		const parsed = parseInt(value.trim(), 10);
+		if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+	}
+	return undefined;
+}
+
+/**
+ * Effective auto network-check interval in minutes. An explicitly set
+ * PI_USAGE_REFRESH_MIN wins; otherwise refreshMinutes from the global
+ * pi-usage.json applies; otherwise the built-in default.
+ */
+export function effectiveRefreshMinutes(): number {
+	if (process.env.PI_USAGE_REFRESH_MIN !== undefined) {
+		return parseEnvInt("PI_USAGE_REFRESH_MIN", AUTO_REFRESH_MINUTES);
+	}
+	return jsonPositiveInt(readJsonObject(usageConfigPath())?.refreshMinutes) ?? AUTO_REFRESH_MINUTES;
+}
+
+/**
+ * Effective UI re-render interval in seconds. An explicitly set
+ * PI_USAGE_UI_REFRESH_SEC wins; otherwise uiRefreshSeconds from the global
+ * pi-usage.json applies; otherwise the built-in default.
+ */
+export function effectiveUiRefreshSeconds(): number {
+	if (process.env.PI_USAGE_UI_REFRESH_SEC !== undefined) {
+		return parseEnvInt("PI_USAGE_UI_REFRESH_SEC", UI_REFRESH_SECONDS);
+	}
+	return jsonPositiveInt(readJsonObject(usageConfigPath())?.uiRefreshSeconds) ?? UI_REFRESH_SECONDS;
 }
 
 export function dedupe(list: string[]): string[] {
