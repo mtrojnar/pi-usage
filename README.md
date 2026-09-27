@@ -379,6 +379,30 @@ OpenCode Zen and the additional compatible providers share a generic probe engin
 
 During normal model use, successful compatible-provider responses passively mark that provider as available, and `429`/quota responses mark it as limited.
 
+## Credential storage
+
+Provider credentials are read from the agent's own credential store. pi-usage only ever opens it read-only.
+
+| Store | Written by | Format |
+|-------|-----------|--------|
+| `<agentDir>/auth.json` | pi | JSON, one entry per provider |
+| `<agentDir>/agent.db` | omp 18.3 and later | SQLite, table `auth_credentials` |
+
+`agent.db` is preferred when it holds the provider. An agent that writes the database no longer maintains `auth.json`, so an `auth.json` left beside it is stale — and a stale OAuth token fails exactly like a missing one, which is much harder to diagnose. pi installs no `agent.db`, so on pi this lookup does nothing.
+
+Rows whose `disabled_cause` is set are skipped: that is how the database records a credential the user removed, and it is the equivalent of a deleted `auth.json` entry. Unknown credential types and unparsable payloads are ignored rather than surfaced as broken credentials.
+
+### Running under a non-pi agent
+
+Under omp, point pi-usage at the agent directory omp uses. `PI_CODING_AGENT_DIR` is omp's own override as well, so one variable serves both processes:
+
+```bash
+export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
+omp plugin link /path/to/pi-usage
+```
+
+Without it, pi-usage falls back to `~/.pi/agent`, which is where stock pi keeps its own `auth.json`. Under omp that file is a stale leftover rather than the live store, and every provider probe fails against an expired or revoked token.
+
 ## Configuration
 
 Widget display uses pi-style extension config files:
@@ -398,7 +422,7 @@ Widget display uses pi-style extension config files:
 | `PI_USAGE_PROACTIVE` | `true` | Run startup, periodic, and expired-window network checks; set `false` for passive headers plus manual `/usage` only (unless Codex response refresh is explicitly enabled) |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH` | same as `PI_USAGE_PROACTIVE` | Refresh Codex usage endpoint while Codex responses transfer data; useful because WebSocket transport has no usage headers |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH_SEC` | `60` | Codex activity-window length; dirty windows refresh usage, and clean windows produce an idle refresh after the normal auto-refresh interval |
-| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | Agent directory used for `auth.json`, `agent.db`, and `pi-usage.json` lookup; set it to omp's agent directory (`~/.omp/agent`) when running under omp |
 | `ANTHROPIC_OAUTH_TOKEN` | unset | Optional Anthropic OAuth token override for Claude Pro/Max checks |
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
 | `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
