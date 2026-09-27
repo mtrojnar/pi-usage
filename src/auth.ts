@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AuthApiKeyCredential, AuthJson, BoundApiKey, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
 import { agentDir, resolveConfigValue } from "./config.ts";
+import { readAgentDbCredential } from "./agent-db.ts";
 import { httpOrigin } from "./http.ts";
 
 // ───────── pi auth.json Access ─────────
@@ -27,12 +28,25 @@ export function readAuthJson(): AuthJson | undefined {
 }
 
 /**
- * Read a provider credential via pi's auth storage without triggering an
- * OAuth refresh. Refresh may perform unbounded provider I/O; pi refreshes
- * tokens during normal model use.
+ * Read a provider credential from the agent's own credential storage, without
+ * triggering an OAuth refresh. Refresh may perform unbounded provider I/O; the
+ * agent refreshes tokens during normal model use.
+ *
+ * Prefers `<agentDir>/agent.db` (omp 18.3+) and falls back to pi's
+ * `auth.json`. See `./agent-db.ts` for why the database comes first.
  */
 export async function readStoredCredential(provider: string): Promise<StoredCredential | undefined> {
 	try {
+		const dir = agentDir();
+
+		// The database wins over auth.json when it holds the provider. An agent
+		// that writes agent.db (omp 18.3+) no longer maintains auth.json, so an
+		// auth.json sitting beside it is stale by definition — and a stale OAuth
+		// token fails in a way that is indistinguishable from no credential at
+		// all. pi installs no agent.db, so this lookup is a no-op there.
+		const fromDb = await readAgentDbCredential(dir, provider);
+		if (fromDb) return fromDb;
+
 		const authPath = authJsonPath();
 		if (!fs.existsSync(authPath)) return undefined;
 		const { readStoredCredential: readPiStoredCredential } = await import("@earendil-works/pi-coding-agent");
