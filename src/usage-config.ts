@@ -44,6 +44,7 @@ const PROVIDER_ALIASES: Record<string, string> = {
 	go: "opencode-go",
 	zen: "opencode",
 	kimi: "kimi-coding",
+	"cline-pass": "clinepass",
 };
 
 /** Canonicalize a provider ID, label, or alias for display-setting comparison. */

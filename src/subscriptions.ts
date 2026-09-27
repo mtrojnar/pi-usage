@@ -42,6 +42,7 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		label: "ClinePass",
 		shortLabel: "ClinePass",
 		authProviderIds: [...CLINEPASS_AUTH_PROVIDER_IDS],
+		registryProviderIds: [...CLINEPASS_AUTH_PROVIDER_IDS],
 		envKeys: [...CLINEPASS_ENV_KEYS],
 		supportedApis: ["openai-completions"],
 		preferredModelIds: ["cline-pass/mimo-v2.5", "cline-pass/deepseek-v4-flash", "cline-pass/qwen3.7-max"],

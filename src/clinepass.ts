@@ -9,14 +9,24 @@ import { parseResetAtSeconds, resetAfterFromAt } from "./headers.ts";
 export const CLINEPASS_PROVIDER = "clinepass";
 
 /**
+ * Provider ID omp registers ClinePass under. The two hosts disagree on
+ * spelling, so both are accepted wherever a ClinePass provider ID is needed.
+ */
+export const CLINEPASS_HOST_PROVIDER_ID = "cline-pass";
+
+/**
  * Official ClinePass quota endpoint. The only origin pi-usage will send
  * ClinePass credentials to is the origin of this URL; custom/proxy bases
  * fail closed in the shared same-origin fetch guard before any fetch.
  */
 export const CLINEPASS_USAGE_LIMITS_URL = "https://api.cline.bot/api/v1/users/me/plan/usage-limits";
 
-/** pi provider IDs that resolve to the ClinePass adapter (canonical only). */
-export const CLINEPASS_AUTH_PROVIDER_IDS = [CLINEPASS_PROVIDER] as const;
+/**
+ * Provider IDs that resolve to the ClinePass adapter, canonical first. Used
+ * for both credential lookup and model discovery: aliasing only the former
+ * would resolve a key and then find no models to probe with it.
+ */
+export const CLINEPASS_AUTH_PROVIDER_IDS = [CLINEPASS_PROVIDER, CLINEPASS_HOST_PROVIDER_ID] as const;
 
 /** Env var holding a static ClinePass API key (documentary; pi resolves the effective credential). */
 export const CLINEPASS_ENV_KEYS = ["CLINE_API_KEY"] as const;
