@@ -33,7 +33,7 @@ const pi = {
 	registerFlag() {},
 	getFlag: (name: string) => name === "usage-widget",
 	on: (event: string, handler: unknown) => { handlers.set(event, handler); },
-	registerCommand: (_name, options) => { command = options.handler; },
+	registerCommand: (name, options) => { if (name === "usage") command = options.handler; },
 } satisfies Pick<ExtensionAPI, "registerFlag" | "getFlag" | "on" | "registerCommand">;
 usageExtension(pi as unknown as ExtensionAPI);
 

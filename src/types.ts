@@ -207,6 +207,37 @@ export interface OpenCodeGoQuotaResult {
 
 export type RefreshTrigger = "startup" | "manual" | "auto";
 
+/** Provider display preferences from pi-usage.json (all optional, all default to show-all). */
+export interface ProviderDisplayPrefs {
+	/** Provider IDs/aliases to never display (statusline, report, widget). */
+	hiddenProviders: string[];
+	/** When non-empty, only these provider IDs/aliases display. */
+	visibleProviders: string[];
+	/** Desired provider order; listed providers come first, unlisted keep default order after. */
+	providerOrder: string[];
+	/** Hide error-state entries (failed checks) in addition to uncredentialed ones. */
+	hideUnconfiguredProviders: boolean;
+	/** Render the widget as one line per provider instead of full detail blocks. */
+	compactWidget: boolean;
+	/** Write the quota summary to the footer status line. Turn off when the widget already shows it. */
+	showStatusLine: boolean;
+	/** Whether quota percentages read as consumed ("used") or still available ("remaining"). */
+	quotaDisplay: QuotaDisplay;
+}
+
+/** Which direction quota percentages read: consumed or still available. */
+export type QuotaDisplay = "used" | "remaining";
+
+export const DEFAULT_DISPLAY_PREFS: ProviderDisplayPrefs = {
+	hiddenProviders: [],
+	visibleProviders: [],
+	providerOrder: [],
+	hideUnconfiguredProviders: false,
+	compactWidget: false,
+	quotaDisplay: "used",
+	showStatusLine: true,
+};
+
 /** Read-only accounting, not a model availability signal. All amounts are USD. */
 export interface OpenRouterUsage {
 	dailySpend?: number;

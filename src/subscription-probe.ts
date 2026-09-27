@@ -45,6 +45,14 @@ export interface SubscriptionProviderConfig {
 	label: string;
 	shortLabel: string;
 	authProviderIds?: string[];
+	/**
+	 * Provider IDs the host may register this provider under, canonical first.
+	 * Defaults to `[provider]`. Hosts disagree on spelling — pi registers
+	 * ClinePass as `clinepass`, omp as `cline-pass` — and model discovery must
+	 * accept every spelling, or the probe resolves a credential and then has
+	 * no model to call with it.
+	 */
+	registryProviderIds?: string[];
 	envKeys?: string[];
 	supportedApis?: SubscriptionProbeApi[];
 	preferredModelIds?: string[];
@@ -54,6 +62,15 @@ export interface SubscriptionProviderConfig {
 }
 
 const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
+
+/**
+ * Every provider ID the host may register `config` under, canonical first and
+ * deduplicated. Distinct from `authProviderIds`, which lists where a
+ * credential may live rather than what the provider is called.
+ */
+export function registryProviderIds(config: SubscriptionProviderConfig): string[] {
+	return [...new Set([config.provider, ...(config.registryProviderIds ?? [])])];
+}
 
 // ───────── Auth Helpers ─────────
 
@@ -93,7 +110,11 @@ export async function getSubscriptionCheckModels(
 	};
 	for (const model of config.documentedModels ?? []) addModel(model);
 
-	const providerModels = ctx?.modelRegistry.getProvider(config.provider)?.getModels() ?? [];
+	// Every spelling the host might use, not just the canonical one: a host that
+	// registers the provider under an alias still owns its models.
+	const providerModels = ctx
+		? registryProviderIds(config).flatMap((id) => ctx.modelRegistry.getProvider(id)?.getModels() ?? [])
+		: [];
 	for (const model of providerModels as readonly PiModelLike[]) {
 		const api = asProbeApi(model.api);
 		if (!api || !allowedApis.has(api)) continue;
@@ -106,8 +127,11 @@ export async function getSubscriptionCheckModels(
 		});
 	}
 
-	// Prefer the currently selected model when it belongs to this provider.
-	const preferredApi = preferredModel?.provider === config.provider ? asProbeApi(preferredModel.api) : undefined;
+	// Prefer the currently selected model when it belongs to this provider,
+	// under any of the provider IDs the host registers it as.
+	const hostIds = new Set(registryProviderIds(config));
+	const selectedHere = preferredModel !== undefined && hostIds.has(preferredModel.provider);
+	const preferredApi = selectedHere ? asProbeApi(preferredModel.api) : undefined;
 	if (preferredModel && preferredApi && allowedApis.has(preferredApi) && !modelsById.has(preferredModel.id)) {
 		addModel({
 			id: preferredModel.id,
@@ -117,7 +141,7 @@ export async function getSubscriptionCheckModels(
 		});
 	}
 
-	const preferredId = preferredModel?.provider === config.provider ? preferredModel.id : undefined;
+	const preferredId = selectedHere ? preferredModel.id : undefined;
 	return sortModelsByPreference(
 		Array.from(modelsById.values()),
 		preferredId ? [preferredId, ...(config.preferredModelIds ?? [])] : config.preferredModelIds ?? [],

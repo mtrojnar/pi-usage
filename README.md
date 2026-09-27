@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, **OpenRouter** accounting, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
+Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, **ClinePass**, **OpenRouter** accounting, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -61,6 +61,12 @@ When pi starts up, **pi-usage** automatically:
    - How many documented Go models were checked before a result was found
 
 5. **OpenCode Zen and compatible subscriptions** — Supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. Kimi Coding reads its dedicated usage endpoint first, showing **5-hour rolling and weekly quota windows** without making a model request. If that endpoint fails, it falls back to the shared lightweight probe engine used by the other compatible providers. It shows:
+
+6. **ClinePass** — Uses pi's resolved `clinepass` credential (static `CLINE_API_KEY` or WorkOS OAuth access token, same as inference) to call the official quota endpoint `GET https://api.cline.bot/api/v1/users/me/plan/usage-limits`. It shows:
+    - **Rolling (5-hour), weekly, and monthly usage percentages** with reset times when the API provides them
+    - Whether ClinePass quota is **available** or **rate limited** (any window at 100% ⇒ rate limited)
+    - No active subscription (`data: null`), auth failures, rate limits, and outages as explicit errors — never as fabricated quota
+    - If the quota endpoint fails and `clinepass` models are registered, falls back to the shared minimal 1-token probe like other compatible providers
    - Whether a provider's models are **available** or **rate limited**
    - Which low-cost model was checked
    - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
@@ -193,6 +199,7 @@ Additional OpenAI/Anthropic-compatible subscription probes are enabled only when
 | Provider | pi provider id | Env var |
 |----------|----------------|---------|
 | OpenCode Zen | `opencode` | `OPENCODE_API_KEY` |
+| ClinePass | `clinepass` | `CLINE_API_KEY` |
 | Kimi Coding | `kimi-coding` | `KIMI_API_KEY` |
 | Z.AI | `zai` | `ZAI_API_KEY` |
 | Z.AI Coding CN | `zai-coding-cn` | `ZAI_CODING_CN_API_KEY` |
@@ -200,7 +207,16 @@ Additional OpenAI/Anthropic-compatible subscription probes are enabled only when
 | Xiaomi Token Plan CN | `xiaomi-token-plan-cn` | `XIAOMI_TOKEN_PLAN_CN_API_KEY` |
 | Xiaomi Token Plan SGP | `xiaomi-token-plan-sgp` | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` |
 
-Kimi Coding first calls `https://api.kimi.com/coding/v1/usages` with Bearer authentication to read quota windows without a model request or usage billing. If that endpoint fails, it falls back to a minimal 1-token model request, which may consume usage. Other compatible providers use minimal 1-token model requests. Checks are skipped on auto-refresh when recent passive provider/quota signals are available and cached quota windows have not expired; bare successful responses do not defer checks.
+Kimi Coding first calls `https://api.kimi.com/coding/v1/usages` with Bearer authentication to read quota windows without a model request or usage billing. ClinePass first calls `https://api.cline.bot/api/v1/users/me/plan/usage-limits` the same way (contract pinned 2026-09-14 from the Cline dashboard client and `cline-usage-tool`; the endpoint is provider-owned and may change). If that endpoint fails, it falls back to a minimal 1-token model request, which may consume usage. Other compatible providers use minimal 1-token model requests. Checks are skipped on auto-refresh when recent passive provider/quota signals are available and cached quota windows have not expired; bare successful responses do not defer checks.
+
+ClinePass specifics and limitations:
+
+- Provider ID is `clinepass` (canonical). There is no `cline-pass` alias: that string is a Cline CLI settings key, not a live pi provider ID.
+- Credentials are only ever sent to the official origin `https://api.cline.bot`. A `clinepass` credential bound to a custom `CLINE_API_BASE`/proxy is refused before any network access — custom origins are unsupported by design.
+- Both static API keys and WorkOS OAuth access tokens (`workos:...`, refreshed by pi/the ClinePass provider) work; pi-usage implements no OAuth refresh of its own.
+- Quota rows map as `five_hour` → rolling, `weekly` → week, `monthly` → month; percentages are provider `percentUsed` clamped to 0–100 (≥100% ⇒ rate limited); reset timestamps (`resetsAt`, ISO-8601, absent for some windows) are shown when valid and never invented. Unknown future quota types are ignored; duplicate rows resolve first-wins.
+- Only quota windows are collected. Request history, token analytics, balances, and plan metadata (`/users/me/plan`, `/usages*`) are intentionally not queried.
+- Footer example: `ClinePass:42%r/2h,31%w/6.1d,18%m/12d` (`r` rolling, `w` week, `m` month), following the same color thresholds as other subscription providers.
 
 ### OpenRouter
 
@@ -237,6 +253,34 @@ By default, startup shows a one-time **Usage Limits** report plus compact footer
 
 Project-local override is also supported in `.pi/pi-usage.json` after the project is trusted.
 
+### Provider display filtering and ordering
+
+The statusline, inline report, and widget show every provider with usable data by default; providers without any credential are already omitted. To trim noise (for example error-state entries for providers you don't use) or pin a layout, set these keys in `pi-usage.json`:
+
+```json
+{
+  "showWidget": true,
+  "hideUnconfiguredProviders": true,
+  "visibleProviders": ["codex", "clinepass", "openrouter"],
+  "hiddenProviders": ["opencode-go", "opencode"],
+  "providerOrder": ["clinepass", "codex", "openrouter"]
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `hideUnconfiguredProviders` | `false` | Hide error-state entries (failed checks) in addition to uncredentialed ones. Available and rate-limited providers still render. |
+| `quotaDisplay` | `"used"` | `"used"` reads percentages as quota consumed (`42% used / 58% left`); `"remaining"` flips every percentage to quota still available (`58% left / 42% used`). Status colors always derive from actual consumption, and OpenRouter dollar figures are unaffected. |
+| `showStatusLine` | `true` | Write the quota summary to the footer status line. Set `false` when a persistent widget already shows it. |
+| `compactWidget` | `false` | Render the widget as one themed line per provider (label plus compact quota summary) instead of full detail blocks, so many providers fit pi's 10-line widget cap. Compact lines use readable window names (`rolling 12%/3h, week 4%/2d`) with spaced separators; the footer statusline keeps its terse suffix format. |
+| `visibleProviders` | unset (all) | Allowlist: only these providers display. Accepts IDs, labels, or aliases below; unknown names are ignored. |
+| `hiddenProviders` | unset (none) | Denylist: these providers never display. Applies after the allowlist. |
+| `providerOrder` | unset (default order) | Listed providers come first in this order; unlisted providers keep their default relative order after them. |
+
+Names are case-insensitive and accept full IDs (`openai-codex`, `anthropic`, `github-copilot`, `opencode-go`, `opencode`, `clinepass`, `kimi-coding`, `zai`, `openrouter`, …), display labels (`Codex`, `Claude`, `Copilot`, `Go`, `Zen`, `ClinePass`, …), or short aliases (`codex`, `claude`, `copilot`, `go`, `zen`, `kimi`). Each key can also be overridden per project in `.pi/pi-usage.json` after trust.
+
+Pi itself caps array widgets at 10 lines and replaces the excess with `... (widget truncated)`. The widget therefore detects overflow: full blocks that fit are kept, and the remaining providers are folded into one trailing `… +N more:` line built from their compact one-liners, so no provider silently disappears. Combine with `compactWidget` and the filters above to stay comfortably under the cap.
+
 For a one-off run:
 
 ```bash
@@ -252,6 +296,22 @@ pi --no-usage-widget
 ### Manual refresh
 
 Type `/usage` in pi to refresh the display on demand. Manual refresh still performs the full usage check even when proactive checks are disabled.
+
+### Changing settings from inside pi
+
+`/usage-config` opens an interactive settings menu: pick a key to edit it — lists wrap around with ↑/↓ (past the last row cycles back to the top and vice versa, unlike pi's built-in dialogs), the cursor starts on the current value, and a dim `ⓘ` line under the list explains the highlighted row. On/off settings show `●`/`○` markers on the current value, provider allow/deny lists use `[x]`/`[ ]` tickboxes over the known providers (toggle as many as you like, then **Done**), and `providerOrder` shows `[n] Name` positions where picking a provider lets you type its new number (empty removes it). Choose **Reset to defaults** to clear all pi-usage settings after a confirmation. For scripting, the same command works non-interactively:
+
+```
+/usage-config show
+/usage-config set hideUnconfiguredProviders true
+/usage-config set visibleProviders codex, clinepass
+/usage-config set providerOrder clinepass, codex, openrouter
+/usage-config set compactWidget true
+/usage-config set refreshMinutes 10
+/usage-config unset visibleProviders
+```
+
+Settings persist to the global `pi-usage.json`; add `--local` to write the project's `.pi/pi-usage.json` instead (only when the project is trusted). Display changes apply immediately; `refreshMinutes` and `uiRefreshSeconds` take effect after reload.
 
 ## Example Display
 
@@ -390,10 +450,12 @@ Widget display uses pi-style extension config files:
 { "showWidget": true }
 ```
 
-| Variable | Default | Description |
+| Key / Variable | Default | Description |
 |----------|---------|-------------|
-| `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive provider/quota signals defer matching auto checks unless cached windows have expired |
-| `PI_USAGE_UI_REFRESH_SEC` | `60` | Cached widget/footer re-render interval in seconds; also checks for expired windows when proactive checks are enabled |
+| `refreshMinutes` (pi-usage.json) | `30` | Network usage-check interval in minutes; recent passive provider/quota signals defer matching auto checks unless cached windows have expired. Takes effect after reload |
+| `uiRefreshSeconds` (pi-usage.json) | `60` | Cached widget/footer re-render interval in seconds; also checks for expired windows when proactive checks are enabled. Takes effect after reload |
+| `PI_USAGE_REFRESH_MIN` | `30` | Env override for `refreshMinutes` (wins when set) |
+| `PI_USAGE_UI_REFRESH_SEC` | `60` | Env override for `uiRefreshSeconds` (wins when set) |
 | `PI_USAGE_EXPIRED_REFRESH_DEBOUNCE_SEC` | `300` | Minimum interval in seconds per provider between automatic refreshes triggered by expired quota windows; only applies when proactive checks are enabled |
 | `PI_USAGE_PROACTIVE` | `true` | Run startup, periodic, and expired-window network checks; set `false` for passive headers plus manual `/usage` only (unless Codex response refresh is explicitly enabled) |
 | `PI_USAGE_CODEX_RESPONSE_REFRESH` | same as `PI_USAGE_PROACTIVE` | Refresh Codex usage endpoint while Codex responses transfer data; useful because WebSocket transport has no usage headers |
@@ -404,6 +466,7 @@ Widget display uses pi-style extension config files:
 | `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for OpenCode Go and OpenCode Zen model availability probes |
 | `OPENROUTER_API_KEY` | unset | OpenRouter key resolved through pi for read-only accounting checks |
+| `CLINE_API_KEY` | unset | ClinePass credential for the official quota endpoint and fallback model probing (or WorkOS OAuth via pi login) |
 | `KIMI_API_KEY` | unset | Kimi Coding API key for the dedicated usage endpoint and fallback model probing |
 | `ZAI_API_KEY` | unset | Z.AI API key for compatible subscription probing |
 | `ZAI_CODING_CN_API_KEY` | unset | Z.AI Coding CN API key for compatible subscription probing |

@@ -1,7 +1,7 @@
 /**
  * pi-usage — Usage limit checker for pi coding agent
  *
- * Checks Codex, Anthropic, GitHub Copilot, OpenCode Go/Zen,
+ * Checks Codex, Anthropic, GitHub Copilot, OpenCode Go/Zen, ClinePass,
  * compatible subscription usage limits, and OpenRouter spending at startup.
  * Displays a startup report by default; persistent widget is opt-in.
  *
@@ -11,17 +11,19 @@
  *   Codex:        Uses OAuth token from pi's auth.json (same as openai-codex provider)
  *   Anthropic:    Uses OAuth token/API key from pi's auth.json or env
  *   Copilot:      Uses OAuth token from pi's auth.json (same as github-copilot provider)
+ *   ClinePass:    Uses pi-resolved clinepass auth (CLINE_API_KEY or WorkOS
+ *                 OAuth access token) for the quota endpoint; official origin only
  *   OpenCode Go:  Uses OPENCODE_API_KEY for model probes, plus optional
  *                 OPENCODE_GO_WORKSPACE_ID + OPENCODE_GO_AUTH_COOKIE for quota
  *   OpenCode Zen / compatible providers: Uses API keys from auth.json/env
  *   OpenRouter:   Uses resolved pi auth for daily spend, key budgets, and account credits
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as path from "node:path";
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AnthropicUsage, CodexUsage, CopilotUsage, OpenCodeGoUsage, OpenRouterUsage, RefreshTrigger, SubscriptionUsage, UsageContext, UsageSnapshot } from "./src/types.ts";
 import {
 	ANTHROPIC_PROVIDER,
-	AUTO_REFRESH_MINUTES,
 	CHECK_TIMEOUT_MS,
 	CODEX_RESPONSE_REFRESH_ENABLED,
 	CODEX_RESPONSE_REFRESH_SECONDS,
@@ -31,12 +33,38 @@ import {
 	OPENAI_CODEX_PROVIDER,
 	OPENCODE_GO_PROVIDER,
 	PROACTIVE_REFRESH_ENABLED,
-	UI_REFRESH_SECONDS,
+	USAGE_CONFIG_FILE,
 	USAGE_WIDGET_FLAG,
 	WIDGET_ID,
+	effectiveRefreshMinutes,
+	effectiveUiRefreshSeconds,
 	getOpenCodeGoQuotaConfig,
+	readJsonObject,
+	readProviderDisplayPrefs,
 	readUsageWidgetSetting,
+	usageConfigPath,
 } from "./src/config.ts";
+import { wrapSelect } from "./src/wrap-select.ts";
+import {
+	applyOrderPosition,
+	applyUsageConfigChange,
+	canonicalProviderName,
+	canonicalUsageConfigKey,
+	menuProviderEntries,
+	normalizeUsageConfigValue,
+	orderRows,
+	orderRowValue,
+	parseUsageConfigArgs,
+	resetUsageConfigFile,
+	toggleInList,
+	USAGE_MENU_KEYS,
+	usageMenuRowValues,
+	toggleRows,
+	toggleRowValue,
+	usageConfigKeyKind,
+	usageConfigOptions,
+	USAGE_CONFIG_KEYS,
+} from "./src/usage-config.ts";
 import { checkOpenRouterUsage, getOpenRouterAuth, OPENROUTER_PROVIDER } from "./src/openrouter.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
 import { quotaWindowIsExpired } from "./src/format.ts";
@@ -239,7 +267,7 @@ export default function (pi: ExtensionAPI) {
 
 	function passiveUpdateIsFresh(key: string): boolean {
 		const at = passiveHeadersAt.get(key) ?? 0;
-		return at > 0 && Date.now() - at < AUTO_REFRESH_MINUTES * 60 * 1000;
+		return at > 0 && Date.now() - at < effectiveRefreshMinutes() * 60 * 1000;
 	}
 
 	function goQuotaUpdateIsFresh(): boolean {
@@ -264,6 +292,28 @@ export default function (pi: ExtensionAPI) {
 			if (at !== undefined && now - at < EXPIRED_REFRESH_DEBOUNCE_MS) providers.delete(provider);
 		}
 		return providers;
+	}
+
+	function formatUsageConfigReport(ctx: UsageContext, projectFile?: string): string {
+		const display = readProviderDisplayPrefs(ctx);
+		const widget = readUsageWidgetSetting(ctx);
+		const globalConfig = readJsonObject(usageConfigPath()) ?? {};
+		const envRefresh = process.env.PI_USAGE_REFRESH_MIN !== undefined;
+		const envUi = process.env.PI_USAGE_UI_REFRESH_SEC !== undefined;
+		const lines = [
+			`pi-usage settings (${usageConfigPath()}${projectFile ? ` + ${projectFile}` : ""}):`,
+			`  showWidget = ${JSON.stringify(widget ?? false)}${pi.getFlag(USAGE_WIDGET_FLAG) === true ? " (--usage-widget flag on)" : pi.getFlag(NO_USAGE_WIDGET_FLAG) === true ? " (--no-usage-widget flag on)" : ""}`,
+			`  showStatusLine = ${display.showStatusLine}`,
+			`  hideUnconfiguredProviders = ${display.hideUnconfiguredProviders}`,
+			`  compactWidget = ${display.compactWidget}`,
+			`  quotaDisplay = ${display.quotaDisplay} (percentages read as quota ${display.quotaDisplay})`,
+			`  visibleProviders = ${display.visibleProviders.length > 0 ? display.visibleProviders.join(", ") : "(all)"}`,
+			`  hiddenProviders = ${display.hiddenProviders.length > 0 ? display.hiddenProviders.join(", ") : "(none)"}`,
+			`  providerOrder = ${display.providerOrder.length > 0 ? display.providerOrder.join(", ") : "(default)"}`,
+			`  refreshMinutes = ${effectiveRefreshMinutes()}${envRefresh ? " (from PI_USAGE_REFRESH_MIN)" : globalConfig.refreshMinutes !== undefined ? " (from pi-usage.json)" : " (default)"} — applies after reload`,
+			`  uiRefreshSeconds = ${effectiveUiRefreshSeconds()}${envUi ? " (from PI_USAGE_UI_REFRESH_SEC)" : globalConfig.uiRefreshSeconds !== undefined ? " (from pi-usage.json)" : " (default)"} — applies after reload`,
+		];
+		return lines.join("\n");
 	}
 
 	function isUsageWidgetEnabled(ctx: UsageContext): boolean {
@@ -292,12 +342,13 @@ export default function (pi: ExtensionAPI) {
 	function renderCachedUsage(ctx: UsageContext, loading = false): void {
 		if (!ctx.hasUI) return;
 		const snapshot = currentSnapshot();
+		const display = readProviderDisplayPrefs(ctx);
 		if (isUsageWidgetEnabled(ctx)) {
-			ctx.ui.setWidget(WIDGET_ID, buildUsageWidget(snapshot, ctx.ui.theme, loading));
+			ctx.ui.setWidget(WIDGET_ID, buildUsageWidget(snapshot, ctx.ui.theme, loading, display));
 		} else {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 		}
-		updateFooterStatus(ctx, snapshot);
+		updateFooterStatus(ctx, snapshot, display);
 	}
 
 	function recentCodexUsageRequest(maxAgeSeconds = CODEX_RESPONSE_REFRESH_SECONDS): boolean {
@@ -305,7 +356,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function codexResponseIdleRefreshTicks(): number {
-		return Math.max(1, Math.ceil((AUTO_REFRESH_MINUTES * 60) / CODEX_RESPONSE_REFRESH_SECONDS));
+		return Math.max(1, Math.ceil((effectiveRefreshMinutes() * 60) / CODEX_RESPONSE_REFRESH_SECONDS));
 	}
 
 	function refreshCodexUsageFromSchedule(ctx: UsageContext, generation: number = sessionGeneration): void {
@@ -558,7 +609,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Some usage checks timed out", "warning");
 			}
 			if (!isUsageWidgetEnabled(ctx) && trigger !== "auto") {
-				ctx.ui.notify(buildStartupUsageMessage(currentSnapshot(), true), "info");
+				ctx.ui.notify(buildStartupUsageMessage(currentSnapshot(), true, readProviderDisplayPrefs(ctx)), "info");
 			}
 		} finally {
 			if (refreshController === controller) refreshController = undefined;
@@ -572,10 +623,10 @@ export default function (pi: ExtensionAPI) {
 
 		if (PROACTIVE_REFRESH_ENABLED) {
 			refreshTimer = stopTimer(refreshTimer);
-			refreshTimer = setInterval(() => {
+		refreshTimer = setInterval(() => {
 				if (generation !== sessionGeneration) return;
 				refreshUsage(ctx, "auto").catch(() => {});
-			}, AUTO_REFRESH_MINUTES * 60 * 1000);
+			}, effectiveRefreshMinutes() * 60 * 1000);
 			unrefTimer(refreshTimer);
 		}
 
@@ -594,7 +645,7 @@ export default function (pi: ExtensionAPI) {
 					refreshUsage(ctx, "auto", providers).catch(() => {});
 				}
 			}
-		}, UI_REFRESH_SECONDS * 1000);
+		}, effectiveUiRefreshSeconds() * 1000);
 		unrefTimer(displayTimer);
 
 		if (CODEX_RESPONSE_REFRESH_ENABLED) {
@@ -739,11 +790,255 @@ export default function (pi: ExtensionAPI) {
 		isLoading = false;
 	});
 
+	const MENU_KEY_HINTS: Record<string, string> = {
+		showWidget: "Persistent usage panel above the editor; when off, the report shows once and only the footer remains.",
+		showStatusLine: "Footer quota summary; turn off when the widget already shows it.",
+		hideUnconfiguredProviders: "Hide failed-check entries as well as providers without credentials.",
+		compactWidget: "One themed line per provider so the widget fits pi's 10-line cap.",
+		quotaDisplay: "Read percentages as quota consumed (used) or still available (remaining).",
+		visibleProviders: "Allowlist: only these providers display; empty shows all.",
+		hiddenProviders: "Denylist: these providers never display.",
+		providerOrder: "Numbered positions; unlisted providers keep default order after.",
+		refreshMinutes: "Network usage-check interval in minutes; applies after reload.",
+		uiRefreshSeconds: "Widget and footer re-render interval in seconds; applies after reload.",
+	};
+
+	const MENU_CHOICE_HINTS: Record<string, Record<string, string>> = {
+		showWidget: {
+			true: "Keep the themed usage panel visible above the editor.",
+			false: "Show the one-time report; keep only the footer status line.",
+		},
+		showStatusLine: {
+			true: "Keep the quota summary in the footer status line.",
+			false: "Clear the footer status; use with a persistent widget.",
+		},
+		hideUnconfiguredProviders: {
+			true: "Show only providers with usable quota data.",
+			false: "Show error-state entries for providers you may not use.",
+		},
+		compactWidget: {
+			true: "One line per provider: label plus quota summary.",
+			false: "Full detail blocks per provider (may overflow the widget cap).",
+		},
+		quotaDisplay: {
+			used: "Percentages read as quota consumed: 0% is nothing used.",
+			remaining: "Percentages read as quota still available: 0% is nothing left.",
+		},
+	};
+
+	/** Interactive settings menu for bare /usage-config. Loops until Done or dismiss. */
+	async function runUsageConfigMenu(ctx: UsageContext, targetFile: string, scopeLabel: string): Promise<void> {
+		const MENU_RESET = "Reset to defaults";
+		const MENU_DONE = "Done";
+		const KEY_ORDER = [...USAGE_MENU_KEYS];
+		for (;;) {
+			const display = readProviderDisplayPrefs(ctx);
+			const widget = readUsageWidgetSetting(ctx);
+			const values = usageMenuRowValues(display, widget ?? false);
+			const rows = [...KEY_ORDER.map((key) => `${key} = ${values[key]}`), MENU_RESET, MENU_DONE];
+			const rowHints = [
+				...KEY_ORDER.map((key) => MENU_KEY_HINTS[key] ?? ""),
+				"Remove all pi-usage settings from this file after confirmation.",
+				"Close the settings menu.",
+			];
+			const choice = await wrapSelect(ctx, `pi-usage settings (${scopeLabel})`, rows, undefined, rowHints);
+			if (!choice || choice === MENU_DONE) return;
+			if (choice === MENU_RESET) {
+				const confirmed = await ctx.ui.confirm(
+					"Reset pi-usage settings",
+					`Remove all pi-usage settings from ${scopeLabel} pi-usage.json?`,
+				).catch(() => false);
+				if (confirmed) {
+					resetUsageConfigFile(targetFile);
+					ctx.ui.notify(`Reset ${scopeLabel} pi-usage settings to defaults.`, "info");
+					renderCachedUsage(ctx);
+				}
+				continue;
+			}
+			const key = KEY_ORDER[rows.indexOf(choice)];
+			if (!key) return;
+			await editUsageConfigKey(ctx, targetFile, scopeLabel, key, values[key]);
+		}
+	}
+
+	/** Single-key editor used by the interactive menu. */
+	async function editUsageConfigKey(
+		ctx: UsageContext,
+		targetFile: string,
+		scopeLabel: string,
+		key: string,
+		currentLabel: string,
+	): Promise<void> {
+		const kind = usageConfigKeyKind(key.toLowerCase());
+		if (kind === "bool" || kind === "option") {
+			const choices = kind === "bool" ? ["true", "false"] : usageConfigOptions(key.toLowerCase()) ?? [];
+			const rows = choices.map((value) => `${value === currentLabel ? "●" : "○"} ${value}`);
+			const choiceHints = choices.map((value) => MENU_CHOICE_HINTS[key]?.[value] ?? "");
+			const choice = await wrapSelect(ctx, key, rows, `● ${currentLabel}`, choiceHints);
+			if (choice === undefined) return;
+			const value = choice.replace(/^[●○] /, "");
+			applyUsageConfigChange(targetFile, { type: "set", key, value: kind === "bool" ? value === "true" : value });
+			ctx.ui.notify(`Set ${key} = ${value} in ${scopeLabel} pi-usage.json.`, "info");
+			renderCachedUsage(ctx);
+			return;
+		}
+		if (kind === "int") {
+			const raw = await ctx.ui.input(`${key} — positive integer (takes effect after reload)`, currentLabel);
+			if (raw === undefined) return;
+			const normalized = normalizeUsageConfigValue(key.toLowerCase(), raw);
+			if ("error" in normalized) {
+				ctx.ui.notify(normalized.error, "warning");
+				return;
+			}
+			applyUsageConfigChange(targetFile, { type: "set", key, value: normalized.value });
+			ctx.ui.notify(`Set ${key} = ${JSON.stringify(normalized.value)} in ${scopeLabel} pi-usage.json. Takes effect after reload.`, "info");
+			return;
+		}
+		if (key === "providerOrder") {
+			await editProviderOrder(ctx, targetFile, scopeLabel);
+			return;
+		}
+		// Allow/deny lists: tickbox toggle loops over the known providers.
+		await editProviderToggleList(ctx, targetFile, scopeLabel, key);
+	}
+
+	/** Tickbox editor for visibleProviders/hiddenProviders. Loops until Done. */
+	async function editProviderToggleList(
+		ctx: UsageContext,
+		targetFile: string,
+		scopeLabel: string,
+		key: string,
+	): Promise<void> {
+		const MENU_DONE = "Done";
+		const emptyNote = key === "visibleProviders" ? "empty shows all providers" : "empty hides nothing";
+		const display = readProviderDisplayPrefs(ctx);
+		const current = key === "visibleProviders" ? display.visibleProviders : display.hiddenProviders;
+		const entries = menuProviderEntries(current);
+		const ids = entries.map((provider) => provider.id);
+		const labels = new Map(entries.map((provider) => [provider.id, provider.label]));
+		let selected = current
+			.map((name) => ids.find((id) => canonicalProviderName(id) === canonicalProviderName(name)) ?? name)
+			.filter((name, index, all) => all.findIndex((other) => canonicalProviderName(other) === canonicalProviderName(name)) === index);
+		for (;;) {
+		const rows = [...toggleRows(ids.map((id) => labels.get(id) ?? id), selected.map((name) => {
+			const id = ids.find((candidate) => canonicalProviderName(candidate) === canonicalProviderName(name)) ?? name;
+			return labels.get(id) ?? id;
+		})), MENU_DONE];
+			const choice = await wrapSelect(ctx, `${key} (${scopeLabel}) — ${emptyNote}`, rows);
+		if (choice === undefined || choice === MENU_DONE) break;
+		const label = toggleRowValue(choice);
+		const id = ids.find((candidate) => (labels.get(candidate) ?? candidate) === label) ?? label;
+		selected = toggleInList(selected, ids, id);
+	}
+		applyUsageConfigChange(targetFile, { type: "set", key, value: selected });
+		ctx.ui.notify(`Set ${key} = ${selected.length > 0 ? selected.join(", ") : "(empty)"} in ${scopeLabel} pi-usage.json.`, "info");
+		renderCachedUsage(ctx);
+	}
+
+	/** Numbered position editor for providerOrder. Loops until Done. */
+	async function editProviderOrder(ctx: UsageContext, targetFile: string, scopeLabel: string): Promise<void> {
+		const MENU_DONE = "Done";
+		const display = readProviderDisplayPrefs(ctx);
+		const entries = menuProviderEntries(display.providerOrder);
+		let order = display.providerOrder
+			.map((name) => entries.find((provider) => canonicalProviderName(provider.id) === canonicalProviderName(name))?.id ?? name)
+			.filter((name, index, all) => all.findIndex((other) => canonicalProviderName(other) === canonicalProviderName(name)) === index);
+		for (;;) {
+		const rows = [...orderRows(entries, order), MENU_DONE];
+			const choice = await wrapSelect(ctx, `providerOrder (${scopeLabel}) — unnumbered providers keep default order after`, rows);
+		if (choice === undefined || choice === MENU_DONE) break;
+		const label = orderRowValue(choice);
+		const provider = entries.find((entry) => entry.label === label);
+		if (!provider) continue;
+		const position = order.findIndex((name) => canonicalProviderName(name) === canonicalProviderName(provider.id));
+		const raw = await ctx.ui.input(
+				`Position for ${label} (1-${entries.length}, empty removes)`,
+				position >= 0 ? String(position + 1) : "",
+			);
+		if (raw === undefined) continue;
+		if (raw.trim() === "") {
+			order = applyOrderPosition(order, entries, provider.id, undefined);
+			continue;
+		}
+		if (!/^\d+$/.test(raw.trim())) {
+			ctx.ui.notify(`Invalid position "${raw.trim()}" — enter a number 1-${entries.length} or leave empty to remove.`, "warning");
+			continue;
+		}
+		order = applyOrderPosition(order, entries, provider.id, parseInt(raw.trim(), 10));
+	}
+		applyUsageConfigChange(targetFile, { type: "set", key: "providerOrder", value: order });
+		ctx.ui.notify(`Set providerOrder = ${order.length > 0 ? order.join(", ") : "(default)"} in ${scopeLabel} pi-usage.json.`, "info");
+		renderCachedUsage(ctx);
+	}
+
 	// ── /usage command ──
 	pi.registerCommand("usage", {
-		description: "Refresh usage limits for Codex, Anthropic, Copilot, OpenCode, and compatible providers, plus OpenRouter spend, budgets, and credits",
+		description: "Refresh usage limits for Codex, Anthropic, Copilot, OpenCode, ClinePass, and compatible providers, plus OpenRouter spend, budgets, and credits",
 		handler: async (_args, ctx) => {
 			await refreshUsage(ctx, "manual");
+		},
+	});
+
+	// ── /usage-config command ──
+	pi.registerCommand("usage-config", {
+		description: "Interactive pi-usage settings menu (showWidget, provider filters/order, refresh intervals). Usage: /usage-config [show] | set <key> <value> | unset <key> [--local]",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			const parsed = parseUsageConfigArgs(args);
+			if (parsed.action === "error") {
+				ctx.ui.notify(parsed.message, "warning");
+				return;
+			}
+			const globalFile = usageConfigPath();
+			const isProjectTrusted = typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted();
+			const targetFile = parsed.local ? path.join(ctx.cwd, CONFIG_DIR_NAME, USAGE_CONFIG_FILE) : globalFile;
+
+			if (parsed.action === "menu") {
+				if (parsed.local && !isProjectTrusted) {
+					ctx.ui.notify("Project settings apply only after the project is trusted. Use /usage-config without --local for global settings.", "warning");
+					return;
+				}
+				try {
+					await runUsageConfigMenu(ctx, targetFile, parsed.local ? "project" : "global");
+				} catch {
+					ctx.ui.notify(formatUsageConfigReport(ctx, parsed.local ? targetFile : undefined), "info");
+				}
+				return;
+			}
+
+			if (parsed.action === "show") {
+				ctx.ui.notify(formatUsageConfigReport(ctx, parsed.local ? targetFile : undefined), "info");
+				return;
+			}
+
+			if (parsed.local && !isProjectTrusted) {
+				ctx.ui.notify("Project settings apply only after the project is trusted. Use /usage-config without --local for global settings.", "warning");
+				return;
+			}
+
+			if (parsed.action === "unset") {
+				if (!USAGE_CONFIG_KEYS.includes(parsed.key as (typeof USAGE_CONFIG_KEYS)[number])) {
+					ctx.ui.notify(`Unknown key "${parsed.key}".`, "warning");
+					return;
+				}
+				applyUsageConfigChange(targetFile, { type: "unset", key: canonicalUsageConfigKey(parsed.key) });
+				ctx.ui.notify(`Removed ${canonicalUsageConfigKey(parsed.key)} from ${parsed.local ? "project" : "global"} pi-usage.json.`, "info");
+				renderCachedUsage(ctx);
+				return;
+			}
+
+			const normalized = normalizeUsageConfigValue(parsed.key, parsed.value);
+			if ("error" in normalized) {
+				ctx.ui.notify(normalized.error, "warning");
+				return;
+			}
+			const key = canonicalUsageConfigKey(parsed.key);
+			applyUsageConfigChange(targetFile, { type: "set", key, value: normalized.value });
+			const reloadNote = key === "refreshMinutes" || key === "uiRefreshSeconds"
+				? " Takes effect after reload."
+				: "";
+			ctx.ui.notify(`Set ${key} = ${JSON.stringify(normalized.value)} in ${parsed.local ? "project" : "global"} pi-usage.json.${reloadNote}`, "info");
+			renderCachedUsage(ctx);
 		},
 	});
 }
