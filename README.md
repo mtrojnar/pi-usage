@@ -393,6 +393,14 @@ Widget display uses pi-style extension config files:
 { "showWidget": true }
 ```
 
+To skip checking and displaying specific providers (even when their keys are configured), list their pi provider ids in the global config:
+
+```json
+{ "hideProviders": ["opencode-go", "opencode", "zai", "zai-coding-cn"] }
+```
+
+Hidden providers are never probed and are omitted from the startup report, widget, and footer.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PI_USAGE_REFRESH_MIN` | `30` | Network usage-check interval in minutes; recent passive provider/quota signals defer matching auto checks unless cached windows have expired |

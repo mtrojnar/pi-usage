@@ -104,6 +104,12 @@ export function readUsageWidgetSetting(ctx?: UsageContext): boolean | undefined 
 	return value;
 }
 
+/** Provider ids listed in pi-usage.json "hideProviders" are never checked or shown. */
+export function readHiddenProviders(): Set<string> {
+	const raw = readJsonObject(usageConfigPath())?.hideProviders;
+	return new Set(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []);
+}
+
 export function dedupe(list: string[]): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();

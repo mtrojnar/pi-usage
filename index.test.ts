@@ -41,6 +41,7 @@ import {
 	resolveConfigValue,
 	validatePrivateConfigFile,
 	widgetSettingFromConfig,
+	readHiddenProviders,
 } from "./src/config.ts";
 import {
 	checkCodexUsageFromUsageApi,
@@ -172,6 +173,25 @@ describe("readStoredCredential", () => {
 			process.env.PI_CODING_AGENT_DIR = tempDir;
 			fs.writeFileSync(path.join(tempDir, "auth.json"), JSON.stringify({ "openai-codex": credential }));
 			assert.deepEqual(await readStoredCredential("openai-codex"), credential);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("readHiddenProviders", () => {
+	it("reads string provider ids from pi-usage.json and ignores invalid entries", () => {
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-usage-hide-"));
+		try {
+			process.env.PI_CODING_AGENT_DIR = tempDir;
+			assert.deepEqual([...readHiddenProviders()], []);
+			fs.writeFileSync(path.join(tempDir, "pi-usage.json"), JSON.stringify({ hideProviders: ["zai", 3, "opencode-go"] }));
+			assert.deepEqual([...readHiddenProviders()].sort(), ["opencode-go", "zai"]);
+			fs.writeFileSync(path.join(tempDir, "pi-usage.json"), JSON.stringify({ hideProviders: "zai" }));
+			assert.deepEqual([...readHiddenProviders()], []);
 		} finally {
 			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

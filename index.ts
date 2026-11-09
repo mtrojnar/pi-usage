@@ -36,6 +36,7 @@ import {
 	WIDGET_ID,
 	getOpenCodeGoQuotaConfig,
 	readUsageWidgetSetting,
+	readHiddenProviders,
 } from "./src/config.ts";
 import { checkOpenRouterUsage, getOpenRouterAuth, OPENROUTER_PROVIDER } from "./src/openrouter.ts";
 import { hasHeaderPrefix } from "./src/headers.ts";
@@ -279,13 +280,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function currentSnapshot(): UsageSnapshot {
+		const hidden = readHiddenProviders();
 		return {
 			codex: codexUsage,
 			openrouter: openrouterUsage,
 			anthropic: anthropicUsage,
 			copilot: copilotUsage,
-			go: goUsage,
-			subscriptions: subscriptionUsageList(),
+			go: hidden.has(OPENCODE_GO_PROVIDER) ? undefined : goUsage,
+			subscriptions: subscriptionUsageList().filter((u) => !hidden.has(u.provider)),
 		};
 	}
 
@@ -397,6 +399,7 @@ export default function (pi: ExtensionAPI) {
 				onUnavailable?: () => void,
 			): void => {
 				if (providers && !providers.has(provider)) return;
+				if (readHiddenProviders().has(provider)) { onUnavailable?.(); return; }
 				const passiveRevision = passiveHeaderRevision(provider);
 				const before = current();
 				checks.push(runIsolatedTask(check, CHECK_TIMEOUT_MS * 2, signal).then((outcome) => {
