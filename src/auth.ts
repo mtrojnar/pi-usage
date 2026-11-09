@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AuthApiKeyCredential, AuthJson, BoundApiKey, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
+import type { AuthApiKeyCredential, AuthJson, BoundProviderAuth, CodexOAuthCredential, CopilotOAuthCredential, UsageContext } from "./types.ts";
 import { agentDir, resolveConfigValue } from "./config.ts";
 import { httpOrigin } from "./http.ts";
 
@@ -46,12 +47,16 @@ export async function readStoredCredential(provider: string): Promise<StoredCred
 export async function resolveProviderAuth(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	provider: string,
-): Promise<{ apiKey: string; baseUrl?: string; source?: string } | undefined> {
+): Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string; source?: string } | undefined> {
 	try {
 		const resolved = await ctx.modelRegistry.getProviderAuth(provider);
 		if (!resolved) return undefined;
-		const apiKey = resolved.auth.apiKey?.trim();
-		return apiKey ? { apiKey, baseUrl: resolved.auth.baseUrl, source: resolved.source } : undefined;
+		const apiKey = resolved.auth.apiKey?.trim() || undefined;
+		const headers = resolved.auth.headers;
+		if (!apiKey && !Object.values(headers ?? {}).some((value) => typeof value === "string" && value.trim() !== "")) {
+			return undefined;
+		}
+		return { apiKey, baseUrl: resolved.auth.baseUrl, source: resolved.source, ...(headers && { headers }) };
 	} catch {
 		return undefined;
 	}
@@ -89,16 +94,19 @@ export function resolveProviderBaseUrl(
 	}
 }
 
-/** Resolve an API key together with the base URL that defines its origin. */
+/** Resolve API-key or header-based auth together with the URL that defines its origin. */
 export async function resolveBoundProviderAuth(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	provider: string,
 	providerSpecificBaseUrl?: string,
-): Promise<BoundApiKey | undefined> {
+): Promise<BoundProviderAuth | undefined> {
 	const resolved = await resolveProviderAuth(ctx, provider);
 	if (!resolved) return undefined;
 	const baseUrl = resolveProviderBaseUrl(ctx, provider, resolved.baseUrl ?? providerSpecificBaseUrl);
-	return baseUrl ? { apiKey: resolved.apiKey, baseUrl, source: resolved.source } : undefined;
+	return baseUrl ? {
+		apiKey: resolved.apiKey, baseUrl, source: resolved.source,
+		...(resolved.headers && { headers: resolved.headers }),
+	} : undefined;
 }
 
 /** Access token from an OAuth credential, unless it is missing or expired. */

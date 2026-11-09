@@ -14,13 +14,26 @@ jobs:
       fail-fast: false
       matrix:
         node-version: [22.19.0, 24]
+        pi-version: ["0.85.0", "1.5.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - name: Install minimum supported Pi
+        if: matrix.pi-version == '0.85.0'
+        # Pi 0.85.0 has an upstream SDK import bug requiring the old server package.
+        run: >-
+          npm install --no-save --package-lock=false --ignore-scripts
+          @earendil-works/pi-ai@0.85.0
+          @earendil-works/pi-coding-agent@0.85.0
+          @earendil-works/pi-server@0.85.0
+      - name: Verify Pi version under test
+        env:
+          PI_VERSION: ${{ matrix.pi-version }}
+        run: node --input-type=module -e 'import { VERSION } from "@earendil-works/pi-coding-agent"; if (VERSION !== process.env.PI_VERSION) throw new Error(`Expected Pi ${process.env.PI_VERSION}, got ${VERSION}`);'
       - run: npm run check
       - run: npm test
       - run: npm run pack:dry-run

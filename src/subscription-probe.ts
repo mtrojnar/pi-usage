@@ -1,5 +1,5 @@
 import type {
-	BoundApiKey,
+	BoundProviderAuth,
 	GoModelStatus,
 	PassiveUsageUpdate,
 	SelectedModel,
@@ -14,6 +14,7 @@ import { resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import { fetchSameOrigin, fetchSameOriginWithTimeout, isSameHttpOrigin, piUsageUserAgent, readErrorDetail, readResponseJson } from "./http.ts";
 import {
+	mergeRequestHeaders,
 	hasHeaderPrefix,
 	headerValue,
 	parseOptionalNumber,
@@ -27,6 +28,7 @@ import {
 	modelCostRank,
 	probeProviderUsage,
 	resolveProbeEndpoint,
+	resolveProbeAuth,
 	sortModelsByPreference,
 	type PiModelLike,
 } from "./probe.ts";
@@ -60,10 +62,10 @@ const DEFAULT_SUPPORTED_APIS: SubscriptionProbeApi[] = ["openai-completions", "o
 export async function getSubscriptionAuth(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	config: SubscriptionProviderConfig,
-): Promise<BoundApiKey | undefined> {
+): Promise<BoundProviderAuth | undefined> {
 	for (const provider of config.authProviderIds ?? [config.provider]) {
 		const resolved = await resolveBoundProviderAuth(ctx, provider);
-		if (resolved) return resolved;
+		if (resolved) return provider === config.provider ? resolved : { ...resolved, fallbackProvider: provider };
 	}
 	return undefined;
 }
@@ -91,8 +93,6 @@ export async function getSubscriptionCheckModels(
 			modelsById.set(model.id, model);
 		}
 	};
-	for (const model of config.documentedModels ?? []) addModel(model);
-
 	const providerModels = ctx?.modelRegistry.getProvider(config.provider)?.getModels() ?? [];
 	for (const model of providerModels as readonly PiModelLike[]) {
 		const api = asProbeApi(model.api);
@@ -116,6 +116,9 @@ export async function getSubscriptionCheckModels(
 			costRank: -1,
 		});
 	}
+
+	// Documented models are fallbacks, not overrides of configured model endpoints or APIs.
+	for (const model of config.documentedModels ?? []) addModel(model);
 
 	const preferredId = preferredModel?.provider === config.provider ? preferredModel.id : undefined;
 	return sortModelsByPreference(
@@ -247,17 +250,17 @@ export type SubscriptionUsageApiResult =
  */
 export async function checkSubscriptionUsageApi(
 	config: SubscriptionProviderConfig,
-	auth: BoundApiKey,
+	auth: BoundProviderAuth,
 	signal?: AbortSignal,
 ): Promise<SubscriptionUsageApiResult> {
 	if (!config.usageApi) return { success: false, error: "no usage endpoint configured" };
 	try {
 		const response = await fetchSameOriginWithTimeout(config.usageApi.url, auth.baseUrl, {
-			headers: {
-				"Authorization": `Bearer ${auth.apiKey}`,
+			headers: mergeRequestHeaders({
+				...(auth.apiKey && { Authorization: `Bearer ${auth.apiKey}` }),
 				"Accept": "application/json",
 				"User-Agent": piUsageUserAgent(),
-			},
+			}, auth.headers),
 		}, signal);
 
 		if (!response.ok) {
@@ -293,22 +296,21 @@ export async function checkSubscriptionUsageApi(
 
 // ───────── Model Probing ─────────
 
-function probeHeaders(apiKey: string, model: SubscriptionProbeModel): Record<string, string> {
+function probeHeaders(auth: BoundProviderAuth, model: SubscriptionProbeModel): Record<string, string> {
 	const headers: Record<string, string> = {
-		...model.headers,
 		"Accept": "application/json",
 		"Content-Type": "application/json",
 	};
 
 	if (model.api === "anthropic-messages") {
-		headers["x-api-key"] = apiKey;
+		if (auth.apiKey) headers["x-api-key"] = auth.apiKey;
 		headers["anthropic-version"] = "2023-06-01";
 		headers["anthropic-dangerous-direct-browser-access"] = "true";
-	} else {
-		headers["Authorization"] = `Bearer ${apiKey}`;
+	} else if (auth.apiKey) {
+		headers["Authorization"] = `Bearer ${auth.apiKey}`;
 	}
 
-	return headers;
+	return mergeRequestHeaders(headers, model.headers, auth.headers);
 }
 
 function probeBody(model: SubscriptionProbeModel): Record<string, unknown> {
@@ -351,7 +353,7 @@ export function isSubscriptionQuotaMessage(message: string): boolean {
 export async function checkSubscriptionProviderUsage(
 	ctx: Pick<UsageContext, "modelRegistry">,
 	config: SubscriptionProviderConfig,
-	auth: BoundApiKey | undefined,
+	auth: BoundProviderAuth | undefined,
 	signal?: AbortSignal,
 	preferredModel?: SelectedModel,
 ): Promise<SubscriptionUsage> {
@@ -379,12 +381,15 @@ export async function checkSubscriptionProviderUsage(
 		label: config.label,
 		models: await getSubscriptionCheckModels(config, preferredModel, ctx, auth.baseUrl),
 		signal,
-		request: (model, probeSignal) => fetchSameOrigin(model.endpoint, auth.baseUrl, {
-			method: "POST",
-			headers: probeHeaders(auth.apiKey, model),
-			body: JSON.stringify(probeBody(model)),
-			signal: probeSignal,
-		}),
+		request: async (model, probeSignal) => {
+			const resolved = await resolveProbeAuth(ctx, config.provider, model, auth);
+			return fetchSameOrigin(resolved.endpoint, resolved.baseUrl, {
+				method: "POST",
+				headers: probeHeaders(resolved, model),
+				body: JSON.stringify(probeBody(model)),
+				signal: probeSignal,
+			});
+		},
 		parseHeaders: (headers, status, modelId) => parseSubscriptionUsageHeaders(config, headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			isSubscriptionModelUnavailable(message)

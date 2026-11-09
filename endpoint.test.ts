@@ -14,7 +14,7 @@ import { checkSubscriptionUsageApi } from "./src/subscription-probe.ts";
 import type { UsageContext } from "./src/types.ts";
 
 const realFetch = globalThis.fetch;
-const ctx = { modelRegistry: { getProvider: () => undefined } } as unknown as Pick<UsageContext, "modelRegistry">;
+const ctx = { modelRegistry: { find: () => undefined, getProvider: () => undefined } } as unknown as Pick<UsageContext, "modelRegistry">;
 const kimiConfig = {
 	provider: "kimi-coding", label: "Kimi Coding", shortLabel: "Kimi",
 	usageApi: { url: "https://api.kimi.com/coding/v1/usages", parse: parseKimiUsagePayload },

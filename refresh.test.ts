@@ -43,3 +43,11 @@ for (const proactive of [false, true]) {
 it("tracks passive state revisions independently of quota freshness", () => {
 	runFixture("passive-revisions", { PI_USAGE_REFRESH_MIN: "1" });
 });
+
+it("clears unavailable Codex auth without erasing newer passive updates", () => {
+	runFixture("codex-auth", {
+		PI_USAGE_PROACTIVE: "false",
+		PI_USAGE_CODEX_RESPONSE_REFRESH: "true",
+		PI_USAGE_CODEX_RESPONSE_REFRESH_SEC: "1",
+	});
+});

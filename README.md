@@ -1,6 +1,6 @@
 # pi-usage
 
-Usage limit checker extension for [pi coding agent](https://github.com/badlogic/pi-mono) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, **OpenRouter** accounting, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
+Usage limit checker extension for [pi coding agent](https://github.com/earendil-works/pi) — shows **Codex**, **Anthropic Claude**, **GitHub Copilot**, **OpenCode Go/Zen**, **OpenRouter** accounting, and other compatible subscription limits at startup so you know your limits before you start coding. Persistent widget is opt-in.
 
 ## Repository and Credits
 
@@ -70,7 +70,7 @@ By default, results are displayed as a startup **Usage Limits** report with a he
 
 ## Installation
 
-Requires pi **v0.85.0 or newer**.
+Requires pi **v0.85.0 or newer**. CI tests pi **v0.85.0** and **v1.5.0** on Node.js 22.19 and 24.
 
 ### Via pi install from npm (recommended)
 
@@ -108,25 +108,27 @@ cd ~/.pi/agent/extensions/pi-usage && npm install
 
 ### Codex
 
-No additional setup needed — pi-usage resolves the same effective `openai-codex` authentication as pi through the current model registry API (pi v0.85 or newer). Provider-managed OAuth refresh is reused automatically; account metadata is read from `$PI_CODING_AGENT_DIR/auth.json` (or `~/.pi/agent/auth.json` by default).
+No additional setup needed — pi-usage resolves the same effective `openai-codex` authentication as pi through the current model registry API (pi v0.85 or newer). Provider-managed OAuth refresh is reused automatically. Account selection prefers effective request headers, then the current token's JWT claims. Stored account metadata from `$PI_CODING_AGENT_DIR/auth.json` (or `~/.pi/agent/auth.json` by default) is used only when its access token exactly matches the active credential.
 
-If you haven't set up Codex yet, run `/login` in pi and select the Codex provider.
+If you haven't set up Codex yet, run `/login openai-codex` in pi (shown as OpenAI Codex (legacy) in pi 1.5.0).
+
+**Compatibility:** This monitor covers the legacy `openai-codex` provider only. Pi's newer **Sign in with ChatGPT** flow under `/login openai` is a separate provider and is not monitored. Its tokens are not reused for Codex quota endpoints; this extension does not currently report OpenAI API-key spending either.
 
 ### Anthropic Claude Pro/Max
 
-No additional setup needed if you already use pi's Anthropic subscription login. `pi-usage` reads the current Anthropic OAuth access token stored in `$PI_CODING_AGENT_DIR/auth.json` under `anthropic`. If the token is expired, pi-usage skips the Anthropic check until pi refreshes auth during normal model use.
+No additional setup needed if you already use pi's Anthropic subscription login. `pi-usage` resolves effective `anthropic` authentication through pi's session-owned model registry, including provider-managed OAuth refresh. Authentication mode is determined from the effective token, not from stale entries in `auth.json`.
 
 If you haven't set up Anthropic yet, run `/login` in pi and select the Anthropic / Claude Pro/Max provider.
 
-`pi-usage` also recognizes `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`. For Claude Pro/Max (OAuth), the proactive check reads Anthropic's free subscription usage endpoint — it makes **no model request** and does not draw from your usage. For plain API keys (no subscription usage endpoint), it falls back to a minimal 1-token availability probe that may incur a tiny normal API cost.
+Through pi, `pi-usage` also recognizes `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and header-based gateway authentication such as `ANTHROPIC_AUTH_TOKEN`. Resolved provider headers and same-origin model headers are preserved, including explicit header removals; gateway credentials are never sent to an official endpoint on another origin. For Claude Pro/Max (OAuth), the proactive check reads Anthropic's free subscription usage endpoint — it makes **no model request** and does not draw from your usage. For plain API keys (no subscription usage endpoint), it falls back to a minimal 1-token availability probe that may incur a tiny normal API cost.
 
 ### GitHub Copilot
 
-No additional setup needed if you already use pi's GitHub Copilot login. `pi-usage` reads the current Copilot token stored in `$PI_CODING_AGENT_DIR/auth.json` under `github-copilot`, including account-specific model availability when pi has it. If the token is expired, pi-usage skips the Copilot check until pi refreshes auth during normal model use.
+No additional setup needed if you already use pi's GitHub Copilot login. `pi-usage` resolves effective `github-copilot` authentication through pi's model registry, including provider-managed OAuth refresh and the account-specific base URL. Account metadata, including allowed models when available, is read from stored credentials.
 
 If you haven't set up Copilot yet, run `/login` in pi and select the GitHub Copilot provider.
 
-`pi-usage` also recognizes `COPILOT_GITHUB_TOKEN` and `GITHUB_COPILOT_TOKEN`. The proactive Copilot check makes a minimal 1-token request to a low-cost available Copilot model.
+Pi recognizes `COPILOT_GITHUB_TOKEN`; `GITHUB_COPILOT_TOKEN` is not a supported alias. The proactive Copilot check makes a minimal 1-token request to a low-cost available Copilot model.
 
 ### OpenCode Go
 
@@ -186,7 +188,7 @@ The cookie is sensitive. Prefer environment variables or a `0600` local config f
 
 ### OpenCode Zen and compatible subscription providers
 
-OpenCode Zen (`opencode`) uses the same `OPENCODE_API_KEY` as OpenCode Go. If you store the key in `$PI_CODING_AGENT_DIR/auth.json` under `opencode`, pi-usage uses that first; it can also reuse an `opencode-go` stored key.
+OpenCode Zen (`opencode`) uses the same `OPENCODE_API_KEY` as OpenCode Go. If you store the key in `$PI_CODING_AGENT_DIR/auth.json` under `opencode`, pi-usage uses that first; it can also reuse an `opencode-go` stored key. Go can likewise reuse a Zen key. Shared credentials are re-resolved before a probe, remain bound to the source provider's HTTP origin, and preserve target-model routing headers. A model with an explicit `Authorization`, `x-api-key`, or `api-key` header uses its own authentication instead of borrowing extra credentials. Missing source credentials, origin changes, and model-auth errors fail closed rather than reusing a stale key.
 
 Additional OpenAI/Anthropic-compatible subscription probes are enabled only when their keys are configured. Unconfigured providers are simply omitted from both the startup report and the widget (no "not configured" rows):
 
@@ -292,7 +294,7 @@ Claude footer chunks are the 5-hour then weekly window (no suffix, like Codex). 
 
 ### Codex Rate Limits
 
-pi-usage first calls `https://chatgpt.com/backend-api/wham/usage` with the same OAuth token that pi stores for Codex/OpenAI auth. This returns the plan type, available usage windows, reset times, and credits without making a model request. Windows are labeled by their reported duration because some plans expose only a weekly window in the API's primary slot.
+pi-usage first calls `https://chatgpt.com/backend-api/wham/usage` with the effective OAuth token pi resolves for legacy `openai-codex` auth. This returns the plan type, available usage windows, reset times, and credits without making a model request. Windows are labeled by their reported duration because some plans expose only a weekly window in the API's primary slot.
 
 If that endpoint fails, pi-usage falls back to the older Codex backend header probe. The fallback response returns rate limit information via HTTP response headers:
 
@@ -367,8 +369,9 @@ During normal OpenCode Go model use, successful responses passively mark the cur
 
 OpenCode Zen and the additional compatible providers share a generic probe engine extracted from the OpenCode Go model-probing logic. The engine:
 
-- Reads API keys from pi `auth.json` first, then provider-specific environment variables.
-- Builds a low-cost model list from documented fallbacks plus pi's installed model registry.
+- Resolves effective API keys or header-based authentication through pi's session-owned model registry, including configured providers and provider-managed OAuth refresh.
+- Builds a low-cost model list from pi's installed model registry, with documented models used only as fallbacks. Configured models retain their effective endpoint and API.
+- Resolves authentication for each model probe through pi's `getApiKeyAndHeaders(model)` API, so model-specific headers and routing overrides are preserved even when catalog models have no `headers` field. These headers are not copied to provider-wide quota endpoints.
 - Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatible endpoints.
 - Prefers the model you currently have selected in pi when it belongs to the provider being checked, so reported limits match that model; otherwise it starts from the cheapest known model.
 - Tries a dedicated quota endpoint first when configured (currently Kimi Coding's `/coding/v1/usages`), without making a model request. Kimi's top-level usage maps to the weekly window; additional windows are classified by duration (up to 1 day: rolling, up to 8 days: weekly, longer: monthly).
@@ -401,7 +404,8 @@ Widget display uses pi-style extension config files:
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi agent directory used for `auth.json` and `pi-usage.json` lookup |
 | `ANTHROPIC_OAUTH_TOKEN` | unset | Optional Anthropic OAuth token override for Claude Pro/Max checks |
 | `ANTHROPIC_API_KEY` | unset | Optional Anthropic API key fallback for rate-limit checks |
-| `COPILOT_GITHUB_TOKEN` / `GITHUB_COPILOT_TOKEN` | unset | Optional GitHub Copilot API token override for Copilot checks |
+| `ANTHROPIC_AUTH_TOKEN` | unset | Bearer authentication for an Anthropic gateway configured in pi; probes remain bound to its resolved origin |
+| `COPILOT_GITHUB_TOKEN` | unset | GitHub Copilot API token resolved through pi for Copilot checks |
 | `OPENCODE_API_KEY` | unset | OpenCode API key used for OpenCode Go and OpenCode Zen model availability probes |
 | `OPENROUTER_API_KEY` | unset | OpenRouter key resolved through pi for read-only accounting checks |
 | `KIMI_API_KEY` | unset | Kimi Coding API key for the dedicated usage endpoint and fallback model probing |
@@ -413,6 +417,19 @@ Widget display uses pi-style extension config files:
 | `OPENCODE_GO_WORKSPACE_ID` | unset | Workspace id from the OpenCode Go dashboard URL |
 | `OPENCODE_GO_AUTH_COOKIE` | unset | Browser `auth` cookie value for `opencode.ai`, used for dashboard quota scraping |
 | `OPENCODE_GO_QUOTA_CONFIG` | unset | Optional explicit path to an `opencode-go.json` quota config file |
+
+## Development and release notes
+
+```bash
+npm ci --ignore-scripts
+npm run check
+npm test
+npm run pack:dry-run
+```
+
+CI covers the minimum supported Pi version (0.85.0) and Pi 1.5.0. The minimum-version job installs the old `pi-server` package only as a workaround for Pi 0.85.0's upstream SDK import bug; it is not a dependency of this extension.
+
+[CHANGELOG.md](CHANGELOG.md) is included in the npm package. Pi 1.5.0 displays new versioned entries after an update. When preparing a release, promote the `Unreleased` section to a `## [x.y.z] - YYYY-MM-DD` heading matching the package version.
 
 ## License
 

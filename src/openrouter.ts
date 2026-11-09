@@ -3,12 +3,13 @@ import { runIsolatedTask } from "./concurrent.ts";
 import { CHECK_TIMEOUT_MS } from "./config.ts";
 import { cancelResponseBody, fetchSameOriginWithTimeout, readResponseJson } from "./http.ts";
 import { jsonObject } from "./json.ts";
-import type { BoundApiKey, OpenRouterUsage, UsageContext } from "./types.ts";
+import { mergeRequestHeaders } from "./headers.ts";
+import type { BoundProviderAuth, OpenRouterUsage, UsageContext } from "./types.ts";
 
 export const OPENROUTER_PROVIDER = "openrouter";
 const API_URL = "https://openrouter.ai/api/v1";
 
-export function getOpenRouterAuth(ctx: UsageContext): Promise<BoundApiKey | undefined> {
+export function getOpenRouterAuth(ctx: UsageContext): Promise<BoundProviderAuth | undefined> {
 	return resolveBoundProviderAuth(ctx, OPENROUTER_PROVIDER);
 }
 
@@ -53,13 +54,13 @@ export function parseOpenRouterCredits(payload: unknown): number | undefined {
 	return total !== undefined && used !== undefined ? total - used : undefined;
 }
 
-export async function checkOpenRouterUsage(auth: BoundApiKey, signal?: AbortSignal): Promise<OpenRouterUsage> {
+export async function checkOpenRouterUsage(auth: BoundProviderAuth, signal?: AbortSignal): Promise<OpenRouterUsage> {
 	const request = async (path: string): Promise<unknown> => {
 		// Bound headers + body together, independently of the other endpoint.
 		// Detach even a request/body cancellation that ignores its abort signal.
 		const result = await runIsolatedTask(async (requestSignal) => {
 			const response = await fetchSameOriginWithTimeout(`${API_URL}/${path}`, auth.baseUrl, {
-				headers: { Authorization: `Bearer ${auth.apiKey}` },
+				headers: mergeRequestHeaders(auth.apiKey ? { Authorization: `Bearer ${auth.apiKey}` } : undefined, auth.headers),
 			}, requestSignal);
 			if (!response.ok) {
 				await cancelResponseBody(response);

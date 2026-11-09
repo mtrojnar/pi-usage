@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type {
 	AnthropicAuth,
 	AnthropicUsage,
@@ -12,10 +13,12 @@ import {
 	ANTHROPIC_PROBE_MODEL,
 	ANTHROPIC_USAGE_URL,
 } from "./config.ts";
-import { readStoredCredential, resolveBoundProviderAuth } from "./auth.ts";
+import { resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import { jsonNumber, jsonObject } from "./json.ts";
 import {
+	bearerToken,
+	mergeRequestHeaders,
 	hasHeaderPrefix,
 	headerValue,
 	parseOptionalNumber,
@@ -36,6 +39,7 @@ import {
 	modelCostRank,
 	probeProviderUsage,
 	resolveProbeEndpoint,
+	resolveProbeAuth,
 	sortModelsByPreference,
 	type PiModelLike,
 } from "./probe.ts";
@@ -59,6 +63,7 @@ interface AnthropicCheckModel {
 	id: string;
 	endpoint: string;
 	costRank: number;
+	headers?: ProviderHeaders;
 }
 
 export type AnthropicUsageApiResult =
@@ -67,20 +72,18 @@ export type AnthropicUsageApiResult =
 
 // ───────── Auth Helpers ─────────
 
-function inferAnthropicAuthType(token: string, fallback: AnthropicAuth["type"]): AnthropicAuth["type"] {
-	return token.includes("sk-ant-oat") ? "oauth" : fallback;
+function inferAnthropicAuthType(token: string | undefined): AnthropicAuth["type"] {
+	return token?.startsWith("sk-ant-oat") ? "oauth" : "api_key";
 }
 
 export async function getAnthropicAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<AnthropicAuth | undefined> {
-	const [credential, resolved] = await Promise.all([
-		readStoredCredential(ANTHROPIC_PROVIDER),
-		resolveBoundProviderAuth(ctx, ANTHROPIC_PROVIDER),
-	]);
+	const resolved = await resolveBoundProviderAuth(ctx, ANTHROPIC_PROVIDER);
 	if (!resolved) return undefined;
-	const fallback = credential?.type === "oauth" ? "oauth" : "api_key";
+	const token = bearerToken(resolved.headers) ?? resolved.apiKey;
 	return {
-		token: resolved.apiKey,
-		type: inferAnthropicAuthType(resolved.apiKey, fallback),
+		token,
+		headers: resolved.headers,
+		type: inferAnthropicAuthType(token),
 		source: resolved.source ?? "pi auth",
 		baseUrl: resolved.baseUrl,
 	};
@@ -175,15 +178,16 @@ export async function checkAnthropicUsageFromUsageApi(
 	token: string,
 	signal?: AbortSignal,
 	credentialBaseUrl = ANTHROPIC_BASE_URL,
+	providerHeaders?: ProviderHeaders,
 ): Promise<AnthropicUsageApiResult> {
 	try {
 		const response = await fetchSameOriginWithTimeout(ANTHROPIC_USAGE_URL, credentialBaseUrl, {
-			headers: {
+			headers: mergeRequestHeaders({
 				...anthropicOAuthHeaders(token),
 				"anthropic-version": "2023-06-01",
 				"anthropic-dangerous-direct-browser-access": "true",
 				"Accept": "application/json",
-			},
+			}, providerHeaders),
 		}, signal);
 
 		if (!response.ok) {
@@ -235,6 +239,7 @@ async function getAnthropicCheckModels(
 			id: model.id,
 			endpoint: resolveProbeEndpoint(model.baseUrl, "anthropic-messages"),
 			costRank: modelCostRank(model),
+			headers: model.headers,
 		});
 	}
 
@@ -274,10 +279,10 @@ function anthropicProbeHeaders(auth: AnthropicAuth): Record<string, string> {
 		"anthropic-dangerous-direct-browser-access": "true",
 	};
 
-	if (auth.type === "oauth") {
+	if (auth.type === "oauth" && auth.token) {
 		Object.assign(headers, anthropicOAuthHeaders(auth.token));
 	} else {
-		headers["x-api-key"] = auth.token;
+		if (auth.token && !bearerToken(auth.headers)) headers["x-api-key"] = auth.token;
 		headers["User-Agent"] = piUsageUserAgent();
 	}
 
@@ -308,12 +313,22 @@ async function checkAnthropicUsageWithProbe(ctx: Pick<UsageContext, "modelRegist
 		label: "Anthropic",
 		models: await getAnthropicCheckModels(ctx, auth, preferredModel),
 		signal,
-		request: (model, probeSignal) => fetchSameOrigin(model.endpoint, auth.baseUrl, {
-			method: "POST",
-			headers: anthropicProbeHeaders(auth),
-			body: JSON.stringify(anthropicProbeBody(auth, model)),
-			signal: probeSignal,
-		}),
+		request: async (model, probeSignal) => {
+			const resolved = await resolveProbeAuth(ctx, ANTHROPIC_PROVIDER, { ...model, api: "anthropic-messages" }, {
+				apiKey: auth.token, headers: auth.headers, baseUrl: auth.baseUrl, source: auth.source,
+			});
+			const token = bearerToken(resolved.headers) ?? resolved.apiKey;
+			const requestAuth: AnthropicAuth = {
+				...auth, token, headers: resolved.headers,
+				type: token === auth.token ? auth.type : inferAnthropicAuthType(token),
+			};
+			return fetchSameOrigin(resolved.endpoint, resolved.baseUrl, {
+				method: "POST",
+				headers: mergeRequestHeaders(anthropicProbeHeaders(requestAuth), model.headers, resolved.headers),
+				body: JSON.stringify(anthropicProbeBody(requestAuth, model)),
+				signal: probeSignal,
+			});
+		},
 		parseHeaders: (headers, status, modelId) => parseAnthropicUsageHeaders(headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			status === 429 ? "rate_limited" : isAnthropicModelUnavailable(message) ? "unavailable" : "failed",
@@ -329,8 +344,8 @@ export async function checkAnthropicUsage(ctx: Pick<UsageContext, "modelRegistry
 	}
 
 	// Claude Pro/Max: read the free usage endpoint (no model request, no extra-usage billing).
-	if (auth.type === "oauth") {
-		const usageApiResult = await checkAnthropicUsageFromUsageApi(auth.token, signal, auth.baseUrl);
+	if (auth.type === "oauth" && auth.token) {
+		const usageApiResult = await checkAnthropicUsageFromUsageApi(auth.token, signal, auth.baseUrl, auth.headers);
 		if (usageApiResult.success) return usageApiResult.usage;
 		if (signal?.aborted) {
 			return { available: false, status: "error", authType: "oauth", source: "usage_api", error: usageApiResult.error };

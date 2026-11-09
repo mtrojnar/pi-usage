@@ -300,6 +300,13 @@ export default function (pi: ExtensionAPI) {
 		updateFooterStatus(ctx, snapshot);
 	}
 
+	function clearCodexUsage(): void {
+		codexUsage = undefined;
+		// A previously authenticated scheduled request must not restore data after logout.
+		codexResponseRefreshController?.abort();
+		codexResponseRefreshController = undefined;
+	}
+
 	function recentCodexUsageRequest(maxAgeSeconds = CODEX_RESPONSE_REFRESH_SECONDS): boolean {
 		return codexUsageRequestAt > 0 && Date.now() - codexUsageRequestAt < maxAgeSeconds * 1000;
 	}
@@ -321,11 +328,18 @@ export default function (pi: ExtensionAPI) {
 		void (async () => {
 			try {
 				const codexAuth = await getCodexToken(ctx);
-				if (!codexAuth || controller.signal.aborted || generation !== sessionGeneration) return;
+				if (controller.signal.aborted || generation !== sessionGeneration) return;
+				if (!codexAuth) {
+					if (passiveHeaderRevision(OPENAI_CODEX_PROVIDER) === passiveRevision) {
+						clearCodexUsage();
+						renderCachedUsage(ctx, widgetLoading);
+					}
+					return;
+				}
 
 				codexUsageRequestAt = Date.now();
 				codexResponseCleanTicks = 0;
-				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal, codexAuth.baseUrl);
+				const result = await checkCodexUsageFromUsageApi(codexAuth.token, codexAuth.accountId, controller.signal, codexAuth.baseUrl, codexAuth.headers);
 				if (result.success && !controller.signal.aborted && generation === sessionGeneration) {
 					const usage = passiveHeaderRevision(OPENAI_CODEX_PROVIDER) === passiveRevision
 						? result.usage
@@ -426,12 +440,14 @@ export default function (pi: ExtensionAPI) {
 						if (!codexAuth || providerSignal.aborted) return undefined;
 						codexUsageRequestAt = Date.now();
 						codexResponseCleanTicks = 0;
-						return checkCodexUsage(codexAuth.token, codexAuth.accountId, providerSignal, codexAuth.baseUrl);
+						return checkCodexUsage(codexAuth.token, codexAuth.accountId, providerSignal, codexAuth.baseUrl, codexAuth.headers, ctx);
 					},
 					() => codexUsage,
 					CODEX_REFRESH_FIELDS,
 					(result) => { codexUsage = normalizeCodexResetTimes(result); },
 					codexRefreshIsAuthoritative,
+					undefined,
+					clearCodexUsage,
 				);
 			}
 

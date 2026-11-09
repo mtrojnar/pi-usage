@@ -26,6 +26,7 @@
     "index.ts",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
@@ -68,18 +69,17 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts openrouter.test.ts",
+    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts openrouter.test.ts auth.test.ts runtime-auth.test.ts",
     "prepublishOnly": "npm run check && npm test",
     "pack:dry-run": "npm pack --dry-run"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=0.85.0 <1"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.85.0",
-    "@earendil-works/pi-coding-agent": "0.85.0",
-    "@earendil-works/pi-server": "0.85.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@types/node": "22.20.1",
     "tsx": "4.23.12",
     "typescript": "7.0.2"

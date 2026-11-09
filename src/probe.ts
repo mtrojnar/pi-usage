@@ -1,8 +1,9 @@
-import type { GoModelStatus, SubscriptionProbeApi } from "./types.ts";
+import type { BoundProviderAuth, GoModelStatus, SubscriptionProbeApi, UsageContext } from "./types.ts";
 import { CHECK_TIMEOUT_MS } from "./config.ts";
 import { errorText, truncate } from "./format.ts";
-import { responseHeadersToRecord } from "./headers.ts";
-import { cancelResponseBody, createTimeoutSignal, readErrorMessage } from "./http.ts";
+import { hasCredentialHeaders, mergeProviderHeaders, responseHeadersToRecord } from "./headers.ts";
+import { resolveBoundProviderAuth } from "./auth.ts";
+import { cancelResponseBody, createTimeoutSignal, isSameHttpOrigin, readErrorMessage } from "./http.ts";
 
 // ───────── Probe Model Helpers ─────────
 
@@ -55,13 +56,69 @@ export function sortModelsByPreference<T extends { id: string; costRank: number 
  * Anthropic endpoints always live under /v1; OpenAI-style endpoints are
  * appended to the base path as-is.
  */
-export function resolveProbeEndpoint(baseUrl: string, api: SubscriptionProbeApi): string {
+type ProbeApi = SubscriptionProbeApi | "openai-codex-responses";
+
+export function resolveProbeEndpoint(baseUrl: string, api: ProbeApi): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
+	if (api === "openai-codex-responses") {
+		if (normalized.endsWith("/codex/responses")) return normalized;
+		return normalized.endsWith("/codex") ? `${normalized}/responses` : `${normalized}/codex/responses`;
+	}
 	const leaf = api === "anthropic-messages" ? "messages" : api === "openai-responses" ? "responses" : "chat/completions";
 	if (normalized.endsWith(`/${leaf}`)) return normalized;
 	if (normalized.endsWith("/v1")) return `${normalized}/${leaf}`;
 	const versionPrefix = api === "anthropic-messages" ? "/v1" : "";
 	return `${normalized}${versionPrefix}/${leaf}`;
+}
+
+/** Re-resolve explicitly shared credentials without allowing an origin change or stale-key fallback. */
+async function resolveSharedProbeAuth(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	provider: string,
+	fallback: BoundProviderAuth,
+): Promise<BoundProviderAuth> {
+	if (!fallback.fallbackProvider || fallback.fallbackProvider === provider) return fallback;
+	const current = await resolveBoundProviderAuth(ctx, fallback.fallbackProvider);
+	if (!current) throw new Error(`Shared provider authentication unavailable for ${fallback.fallbackProvider}`);
+	if (!isSameHttpOrigin(current.baseUrl, fallback.baseUrl)) {
+		throw new Error("Refusing shared authentication on a different credential origin");
+	}
+	return { ...current, fallbackProvider: fallback.fallbackProvider };
+}
+
+/** Resolve model-specific auth at request time; catalog models do not carry configured headers. */
+export async function resolveProbeAuth(
+	ctx: Pick<UsageContext, "modelRegistry">,
+	provider: string,
+	probe: { id: string; api: ProbeApi; endpoint: string },
+	fallback: BoundProviderAuth,
+): Promise<BoundProviderAuth & { endpoint: string }> {
+	if (!isSameHttpOrigin(probe.endpoint, fallback.baseUrl)) {
+		throw new Error("Refusing credentialed probe on a foreign origin");
+	}
+	const model = ctx.modelRegistry.find(provider, probe.id);
+	if (!model) return { ...await resolveSharedProbeAuth(ctx, provider, fallback), endpoint: probe.endpoint };
+	if (model.api !== probe.api) throw new Error(`Configured API changed for ${provider}/${probe.id}`);
+
+	const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!resolved.ok) throw new Error(`Model authentication failed for ${provider}/${probe.id}: ${resolved.error}`);
+	const baseUrl = resolved.baseUrl ?? model.baseUrl;
+	if (!isSameHttpOrigin(baseUrl, fallback.baseUrl)) {
+		throw new Error("Refusing model authentication on a different credential origin");
+	}
+	// Borrow only when neither an API key nor explicit credential headers authenticate the model.
+	// Routing-only headers can still be merged; authentication errors above remain fatal.
+	const shared = !resolved.apiKey && !hasCredentialHeaders(resolved.headers)
+		&& fallback.fallbackProvider && fallback.fallbackProvider !== provider
+		? await resolveSharedProbeAuth(ctx, provider, fallback)
+		: undefined;
+	return {
+		apiKey: resolved.apiKey || shared?.apiKey,
+		headers: shared ? mergeProviderHeaders(shared.headers, resolved.headers) : resolved.headers,
+		baseUrl,
+		source: shared?.source ?? fallback.source,
+		endpoint: resolveProbeEndpoint(baseUrl, probe.api),
+	};
 }
 
 // ───────── Generic Probe Loop ─────────

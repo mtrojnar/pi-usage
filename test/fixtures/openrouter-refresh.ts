@@ -24,7 +24,10 @@ globalThis.fetch = async (url, init) => {
 const pi = {
 	registerFlag() {},
 	getFlag: (name: string) => name === "usage-widget",
-	on: (event: string, handler: unknown) => { handlers.set(event, handler); },
+	on: (event: string, handler: unknown) => {
+		handlers.set(event, handler);
+		return () => { handlers.delete(event); };
+	},
 	registerCommand: (_name, options) => { command = options.handler; },
 } satisfies Pick<ExtensionAPI, "registerFlag" | "getFlag" | "on" | "registerCommand">;
 usageExtension(pi as unknown as ExtensionAPI);
@@ -37,6 +40,7 @@ const ctx = {
 		notify() {},
 	},
 	modelRegistry: {
+		find: () => undefined,
 		getProviderAuth: async (provider: string) => {
 			lookups.push(provider);
 			return configured && provider === "openrouter"

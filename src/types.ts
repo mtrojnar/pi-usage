@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 // ───────── Types ─────────
@@ -32,15 +33,19 @@ export type GoProbeApi = Extract<SubscriptionProbeApi, "openai-completions" | "a
 
 export type AnthropicAuthType = "oauth" | "api_key";
 
-/** API key paired with the provider base URL it was resolved for. */
-export interface BoundApiKey {
-	apiKey: string;
+/** Resolved authentication paired with the HTTP origin it belongs to. */
+export interface BoundProviderAuth {
+	/** A provider explicitly allowed to supply shared credentials when the target has none. */
+	fallbackProvider?: string;
+	apiKey?: string;
+	headers?: ProviderHeaders;
 	baseUrl: string;
 	source?: string;
 }
 
 export interface AnthropicAuth {
-	token: string;
+	token?: string;
+	headers?: ProviderHeaders;
 	type: AnthropicAuthType;
 	source: string;
 	baseUrl: string;
@@ -79,7 +84,8 @@ export interface GoCheckModel extends SubscriptionProbeModel {
 }
 
 export interface CopilotAuth {
-	token: string;
+	token?: string;
+	headers?: ProviderHeaders;
 	source: string;
 	baseUrl: string;
 	enterpriseDomain?: string;

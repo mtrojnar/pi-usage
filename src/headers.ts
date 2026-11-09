@@ -1,3 +1,41 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
+
+/** Merge auth headers without discarding null markers needed by later request defaults. */
+export function mergeProviderHeaders(...sources: (ProviderHeaders | undefined)[]): ProviderHeaders {
+	const headers = new Map<string, string | null>();
+	for (const source of sources) {
+		for (const [name, value] of Object.entries(source ?? {})) headers.set(name.toLowerCase(), value);
+	}
+	return Object.fromEntries(headers);
+}
+
+/** Merge request headers case-insensitively, honoring Pi's null deletion markers. */
+export function mergeRequestHeaders(...sources: (ProviderHeaders | undefined)[]): Record<string, string> {
+	const headers = new Headers();
+	for (const source of sources) {
+		for (const [name, value] of Object.entries(source ?? {})) {
+			if (value === null) headers.delete(name);
+			else headers.set(name, value);
+		}
+	}
+	return Object.fromEntries(headers);
+}
+
+/** Whether a standard provider-auth header is explicitly set, rather than empty or removed. */
+export function hasCredentialHeaders(headers?: ProviderHeaders): boolean {
+	const normalized = mergeProviderHeaders(headers);
+	return ["authorization", "x-api-key", "api-key"].some((name) => {
+		const value = normalized[name];
+		return typeof value === "string" && value.trim() !== "";
+	});
+}
+
+/** Extract a bearer token when a provider resolves authentication through headers. */
+export function bearerToken(headers?: ProviderHeaders): string | undefined {
+	const authorization = mergeRequestHeaders(headers).authorization;
+	return authorization?.match(/^Bearer\s+(.+)$/i)?.[1].trim() || undefined;
+}
+
 // ───────── Response Header Parsing ─────────
 
 /** Case-insensitive lookup of a single header value. */

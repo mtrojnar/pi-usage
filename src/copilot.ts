@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type {
 	CopilotAuth,
 	CopilotOAuthCredential,
@@ -16,8 +17,10 @@ import {
 } from "./config.ts";
 import { readStoredCredential, resolveProviderAuth, resolveProviderBaseUrl } from "./auth.ts";
 import { clampPercent } from "./format.ts";
-import { fetchSameOrigin } from "./http.ts";
+import { fetchSameOrigin, isSameHttpOrigin } from "./http.ts";
 import {
+	bearerToken,
+	mergeRequestHeaders,
 	hasHeaderPrefix,
 	headerValue,
 	parseOptionalNumber,
@@ -31,6 +34,7 @@ import {
 	modelCostRank,
 	probeProviderUsage,
 	resolveProbeEndpoint,
+	resolveProbeAuth,
 	sortModelsByPreference,
 	type PiModelLike,
 } from "./probe.ts";
@@ -62,6 +66,7 @@ interface CopilotCheckModel {
 	api: SubscriptionProbeApi;
 	endpoint: string;
 	costRank: number;
+	headers?: ProviderHeaders;
 }
 
 // ───────── Auth Helpers ─────────
@@ -77,8 +82,8 @@ export function normalizeCopilotDomain(input: string | undefined): string | unde
 	}
 }
 
-function baseUrlFromToken(token: string): string | undefined {
-	const match = token.match(/proxy-ep=([^;]+)/);
+function baseUrlFromToken(token: string | undefined): string | undefined {
+	const match = token?.match(/proxy-ep=([^;]+)/);
 	if (!match) return undefined;
 	const apiHost = match[1].replace(/^proxy\./, "api.");
 	return `https://${apiHost}`;
@@ -103,7 +108,8 @@ export async function getCopilotAuth(ctx: Pick<UsageContext, "modelRegistry">): 
 	if (!resolved) return undefined;
 	const oauth = credential as CopilotOAuthCredential | undefined;
 	const enterpriseDomain = normalizeCopilotDomain(oauth?.enterpriseUrl);
-	const tokenBaseUrl = baseUrlFromToken(resolved.apiKey)
+	const token = bearerToken(resolved.headers) ?? resolved.apiKey;
+	const tokenBaseUrl = baseUrlFromToken(token)
 		?? (enterpriseDomain ? `https://copilot-api.${enterpriseDomain}` : undefined);
 	const baseUrl = resolveProviderBaseUrl(
 		ctx,
@@ -112,7 +118,8 @@ export async function getCopilotAuth(ctx: Pick<UsageContext, "modelRegistry">): 
 	);
 	if (!baseUrl) return undefined;
 	return {
-		token: resolved.apiKey,
+		token,
+		headers: resolved.headers,
 		source: resolved.source ?? "pi auth",
 		baseUrl,
 		enterpriseDomain,
@@ -259,6 +266,7 @@ async function getCopilotCheckModels(ctx: Pick<UsageContext, "modelRegistry">, a
 			api,
 			endpoint: resolveProbeEndpoint(auth.baseUrl, api),
 			costRank: modelCostRank(model),
+			headers: isSameHttpOrigin(model.baseUrl, auth.baseUrl) ? model.headers : undefined,
 		});
 	}
 
@@ -289,7 +297,7 @@ function copilotProbeHeaders(auth: CopilotAuth, api: SubscriptionProbeApi): Reco
 		...COPILOT_HEADERS,
 		"Accept": "application/json",
 		"Content-Type": "application/json",
-		"Authorization": `Bearer ${auth.token}`,
+		...(auth.token && { Authorization: `Bearer ${auth.token}` }),
 		"X-GitHub-Api-Version": COPILOT_API_VERSION,
 	};
 
@@ -346,12 +354,18 @@ export async function checkCopilotUsage(ctx: Pick<UsageContext, "modelRegistry">
 		label: "GitHub Copilot",
 		models: await getCopilotCheckModels(ctx, auth, preferredModel),
 		signal,
-		request: (model, probeSignal) => fetchSameOrigin(model.endpoint, auth.baseUrl, {
-			method: "POST",
-			headers: copilotProbeHeaders(auth, model.api),
-			body: JSON.stringify(copilotProbeBody(model)),
-			signal: probeSignal,
-		}),
+		request: async (model, probeSignal) => {
+			const resolved = await resolveProbeAuth(ctx, GITHUB_COPILOT_PROVIDER, model, {
+				apiKey: auth.token, headers: auth.headers, baseUrl: auth.baseUrl, source: auth.source,
+			});
+			const requestAuth = { ...auth, token: bearerToken(resolved.headers) ?? resolved.apiKey };
+			return fetchSameOrigin(resolved.endpoint, resolved.baseUrl, {
+				method: "POST",
+				headers: mergeRequestHeaders(copilotProbeHeaders(requestAuth, model.api), model.headers, resolved.headers),
+				body: JSON.stringify(copilotProbeBody(model)),
+				signal: probeSignal,
+			});
+		},
 		parseHeaders: (headers, status, modelId) => parseCopilotUsageHeaders(headers, status, modelId)?.usage,
 		classifyError: (status, message) =>
 			status === 429 || isCopilotQuotaMessage(message)

@@ -223,6 +223,7 @@ describe("usage refresh orchestration", () => {
 					notify: (message: string) => { notifications.push(message); },
 				},
 				modelRegistry: {
+					find: () => undefined,
 					getProviderAuth: (provider: string) => {
 						if (provider === "kimi-coding") return new Promise(() => {});
 						if (provider === "zai") {
@@ -948,6 +949,7 @@ describe("credential origin enforcement", () => {
 	it("binds a resolved key to the provider's effective base URL", async () => {
 		const ctx = {
 			modelRegistry: {
+				find: () => undefined,
 				getProviderAuth: async () => ({ auth: { apiKey: "proxy-key" }, source: "test" }),
 				getProvider: () => ({ baseUrl: "https://proxy.example/anthropic", getModels: () => [] }),
 			},
@@ -963,6 +965,7 @@ describe("credential origin enforcement", () => {
 	it("does not bind a provider key when catalog models span origins without a provider base URL", async () => {
 		const ctx = {
 			modelRegistry: {
+				find: () => undefined,
 				getProviderAuth: async () => ({ auth: { apiKey: "ambiguous-key" } }),
 				getProvider: () => ({
 					getModels: () => [
@@ -984,6 +987,7 @@ describe("credential origin enforcement", () => {
 		}) as typeof fetch;
 		const ctx = {
 			modelRegistry: {
+				find: () => undefined,
 				getProvider: () => ({
 					getModels: () => [{
 						id: "foreign-model",
@@ -1527,7 +1531,7 @@ describe("checkSubscriptionProviderUsage with a usage endpoint", () => {
 		usageApi: { url: "https://api.example/v1/usages", parse: parseKimiUsagePayload },
 		documentedModels: [{ id: "demo-model", api: "openai-completions", endpoint: "https://api.example/v1/chat/completions", costRank: 0 }],
 	};
-	const ctx = { modelRegistry: { getProvider: () => undefined } } as unknown as Pick<UsageContext, "modelRegistry">;
+	const ctx = { modelRegistry: { find: () => undefined, getProvider: () => undefined } } as unknown as Pick<UsageContext, "modelRegistry">;
 
 	for (const used of [32, 100]) {
 		it(`uses the quota endpoint without a model probe (${used}% used)`, async () => {
@@ -1646,6 +1650,7 @@ describe("getSubscriptionCheckModels", () => {
 	it("keeps only endpoints on the origin bound to the key", async () => {
 		const ctx = {
 			modelRegistry: {
+				find: () => undefined,
 				getProvider: () => ({
 					getModels: () => [{
 						id: "big-pickle",

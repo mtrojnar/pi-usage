@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { OpenCodeGoQuotaConfigState, UsageContext } from "./types.ts";
 
 // ───────── Constants ─────────
@@ -64,10 +64,7 @@ export function parseBoolValue(value: string | undefined): boolean | undefined {
 }
 
 export function agentDir(): string {
-	const dir = (process.env.PI_CODING_AGENT_DIR || "~/.pi/agent").trim();
-	if (!dir) return path.join(os.homedir(), ".pi", "agent");
-	if (dir.startsWith("~")) return path.join(os.homedir(), dir.slice(1));
-	return path.resolve(dir);
+	return getAgentDir();
 }
 
 export function usageConfigPath(): string {
@@ -200,7 +197,8 @@ export function extractAccountId(token: string): string | undefined {
 		const parts = token.split(".");
 		if (parts.length !== 3) return undefined;
 		const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-		return payload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+		const accountId = payload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+		return typeof accountId === "string" ? accountId.trim() || undefined : undefined;
 	} catch {
 		return undefined;
 	}

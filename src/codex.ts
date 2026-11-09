@@ -1,5 +1,5 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type {
-	CodexOAuthCredential,
 	CodexUsage,
 	CodexUsageApiResult,
 	UsageContext,
@@ -15,7 +15,8 @@ import {
 import { readStoredCredential, resolveBoundProviderAuth } from "./auth.ts";
 import { clampPercent, errorText } from "./format.ts";
 import { jsonNumber, jsonObject } from "./json.ts";
-import { hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
+import { resolveProbeAuth, resolveProbeEndpoint } from "./probe.ts";
+import { bearerToken, mergeRequestHeaders, hasHeaderPrefix, headerValue, parseHeaderBool, parseHeaderNumber, parseRetryAfterSeconds, responseHeadersToRecord } from "./headers.ts";
 import {
 	cancelResponseBody,
 	fetchSameOriginWithTimeout,
@@ -30,16 +31,20 @@ import {
 
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
-export async function getCodexToken(ctx: Pick<UsageContext, "modelRegistry">): Promise<{ token: string; accountId: string; baseUrl: string } | undefined> {
+export async function getCodexToken(ctx: Pick<UsageContext, "modelRegistry">): Promise<{ token: string; accountId: string; baseUrl: string; headers?: ProviderHeaders } | undefined> {
 	const [credential, resolved] = await Promise.all([
 		readStoredCredential(OPENAI_CODEX_PROVIDER),
 		resolveBoundProviderAuth(ctx, OPENAI_CODEX_PROVIDER),
 	]);
-	const token = resolved?.apiKey;
+	if (!resolved) return undefined;
+	const token = bearerToken(resolved.headers) ?? resolved.apiKey;
 	if (!token) return undefined;
 
-	const accountId = (credential as CodexOAuthCredential | undefined)?.accountId ?? extractAccountId(token);
-	return accountId ? { token, accountId, baseUrl: resolved.baseUrl } : undefined;
+	const storedAccountId = credential?.type === "oauth" && credential.access === token
+		&& typeof credential.accountId === "string" ? credential.accountId.trim() || undefined : undefined;
+	const accountId = headerValue(mergeRequestHeaders(resolved.headers), "chatgpt-account-id")
+		?? extractAccountId(token) ?? storedAccountId;
+	return accountId ? { token, accountId, baseUrl: resolved.baseUrl, ...(resolved.headers && { headers: resolved.headers }) } : undefined;
 }
 
 // ───────── Window Helpers ─────────
@@ -85,14 +90,15 @@ export async function checkCodexUsageFromUsageApi(
 	accountId: string,
 	signal?: AbortSignal,
 	credentialBaseUrl = CODEX_BASE_URL,
+	providerHeaders?: ProviderHeaders,
 ): Promise<CodexUsageApiResult> {
 	try {
 		const response = await fetchSameOriginWithTimeout(OPENAI_USAGE_URL, credentialBaseUrl, {
-			headers: {
+			headers: mergeRequestHeaders({
 				"Authorization": `Bearer ${token}`,
 				"ChatGPT-Account-Id": accountId,
 				"User-Agent": piUsageUserAgent(),
-			},
+			}, providerHeaders),
 		}, signal);
 
 		if (!response.ok) {
@@ -230,26 +236,29 @@ export function parseCodexUsageHeaders(
 // ───────── Probe Fallback ─────────
 
 export function resolveCodexProbeEndpoint(baseUrl: string): string {
-	const normalized = baseUrl.replace(/\/+$/, "");
-	if (normalized.endsWith("/codex/responses")) return normalized;
-	if (normalized.endsWith("/codex")) return `${normalized}/responses`;
-	return `${normalized}/codex/responses`;
+	return resolveProbeEndpoint(baseUrl, "openai-codex-responses");
 }
 
-async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal, credentialBaseUrl = CODEX_BASE_URL): Promise<CodexUsage> {
+async function checkCodexUsageWithProbe(token: string, accountId: string, signal?: AbortSignal, credentialBaseUrl = CODEX_BASE_URL, providerHeaders?: ProviderHeaders, ctx?: Pick<UsageContext, "modelRegistry">): Promise<CodexUsage> {
 	try {
-		const endpoint = resolveCodexProbeEndpoint(credentialBaseUrl);
-		const response = await fetchSameOriginWithTimeout(endpoint, credentialBaseUrl, {
+		const probe = { id: CODEX_PROBE_MODEL, api: "openai-codex-responses" as const, endpoint: resolveCodexProbeEndpoint(credentialBaseUrl) };
+		const fallback = { apiKey: token, baseUrl: credentialBaseUrl, headers: providerHeaders };
+		const auth = ctx ? await resolveProbeAuth(ctx, OPENAI_CODEX_PROVIDER, probe, fallback) : { ...fallback, endpoint: probe.endpoint };
+		const requestToken = bearerToken(auth.headers) ?? auth.apiKey;
+		const requestAccountId = headerValue(mergeRequestHeaders(auth.headers), "chatgpt-account-id")
+			?? (requestToken ? extractAccountId(requestToken) : undefined) ?? (requestToken === token ? accountId : undefined);
+		if (!requestToken || !requestAccountId) throw new Error("Codex authentication is missing a token-bound account ID");
+		const response = await fetchSameOriginWithTimeout(auth.endpoint, auth.baseUrl, {
 			method: "POST",
-			headers: {
-				"Authorization": `Bearer ${token}`,
-				"chatgpt-account-id": accountId,
+			headers: mergeRequestHeaders({
+				...(requestToken && { Authorization: `Bearer ${requestToken}` }),
+				"chatgpt-account-id": requestAccountId,
 				"Content-Type": "application/json",
 				"OpenAI-Beta": "responses=experimental",
 				"accept": "text/event-stream",
 				"originator": "pi-usage",
 				"User-Agent": piUsageUserAgent(),
-			},
+			}, auth.headers),
 			body: JSON.stringify({
 				model: CODEX_PROBE_MODEL,
 				instructions: "Reply with just: ok",
@@ -300,13 +309,15 @@ export async function checkCodexUsage(
 	accountId: string,
 	signal?: AbortSignal,
 	credentialBaseUrl = CODEX_BASE_URL,
+	providerHeaders?: ProviderHeaders,
+	ctx?: Pick<UsageContext, "modelRegistry">,
 ): Promise<CodexUsage> {
-	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId, signal, credentialBaseUrl);
+	const usageApiResult = await checkCodexUsageFromUsageApi(token, accountId, signal, credentialBaseUrl, providerHeaders);
 	if (usageApiResult.success || signal?.aborted) {
 		return usageApiResult.success ? usageApiResult.usage : { ...PROBE_ERROR_BASE, error: usageApiResult.error };
 	}
 
-	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal, credentialBaseUrl);
+	const probeResult = await checkCodexUsageWithProbe(token, accountId, signal, credentialBaseUrl, providerHeaders, ctx);
 	if (probeResult.error && !probeResult.rateLimited) {
 		probeResult.error = `${usageApiResult.error}; fallback probe: ${probeResult.error}`;
 	}

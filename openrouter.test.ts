@@ -63,7 +63,7 @@ test("read-only requests, optional credit permission, invalid JSON, and origin b
 		calls.push(url);
 		assert.equal(init.redirect, "error");
 		assert.equal(init.body, undefined);
-		assert.equal((init.headers as Record<string, string>).Authorization, "Bearer test-key");
+		assert.equal(new Headers(init.headers).get("Authorization"), "Bearer test-key");
 		return url.endsWith("/key") ? Response.json(key) : new Response("forbidden", { status: 403 });
 	});
 	const auth = { apiKey: "test-key", baseUrl: "https://openrouter.ai/api/v1" };
@@ -109,6 +109,7 @@ test("stalled optional credits cannot discard key usage or advance its reset bou
 
 test("OpenRouter reuses resolved auth and does not default a custom credential to official origin", async () => {
 	const ctx = { modelRegistry: {
+		find: () => undefined,
 		getProviderAuth: async (provider: string) => {
 			assert.equal(provider, "openrouter");
 			return { auth: { apiKey: " key ", baseUrl: "https://custom.example/v1" }, source: "test" };

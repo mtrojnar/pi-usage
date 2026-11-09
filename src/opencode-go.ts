@@ -1,5 +1,5 @@
 import type {
-	BoundApiKey,
+	BoundProviderAuth,
 	GoCheckModel,
 	OpenCodeGoQuotaConfig,
 	OpenCodeGoQuotaConfigState,
@@ -56,7 +56,7 @@ const GO_QUOTA_HEADER_PREFIXES = OPENCODE_GO_PROVIDER_CONFIG.quotaHeaderPrefixes
 
 // ───────── Auth Helpers ─────────
 
-export function getOpenCodeAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<BoundApiKey | undefined> {
+export function getOpenCodeAuth(ctx: Pick<UsageContext, "modelRegistry">): Promise<BoundProviderAuth | undefined> {
 	return getSubscriptionAuth(ctx, OPENCODE_GO_PROVIDER_CONFIG);
 }
 
@@ -211,7 +211,7 @@ function quotaFields(quota: OpenCodeGoQuotaResult): Partial<OpenCodeGoUsage> {
 
 export async function checkOpenCodeGoUsage(
 	ctx: Pick<UsageContext, "modelRegistry">,
-	auth: BoundApiKey | undefined,
+	auth: BoundProviderAuth | undefined,
 	configState: OpenCodeGoQuotaConfigState,
 	signal?: AbortSignal,
 	preferredModel?: SelectedModel,
