@@ -66,6 +66,14 @@ When pi starts up, **pi-usage** automatically:
    - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
    - Error details for quota/auth/model failures
 
+6. **Vendor instances (yaml-providers)** — Providers registered by the yaml-providers extension (named after the yaml instance, e.g. `kimiqq`) are discovered by their credential origin and checked per instance, so two accounts of the same vendor show up separately. It shows:
+   - **BigModel** (open.bigmodel.cn): 5h + 7d token quota windows and plan tier, from the monitor quota endpoint
+   - **Kimi Coding** (api.kimi.com): the usage endpoint's windows exactly as the account reports them — monthly-plan accounts show 5h + month, weekly-plan accounts show 5h + week
+   - **DeepSeek** (api.deepseek.com): account balance (total, granted, topped-up) from the balance endpoint; DeepSeek exposes no usage API for API keys
+   - **OpenRouter** (openrouter.ai): per-instance key spend/budget/credits (same checks as the builtin OpenRouter support, keyed to the instance's own API key)
+   - **Kimi Coding OAuth login**: accounts logged in via `/login kimi-coding` are checked with their stored OAuth token (same usage endpoint and windows as API-key instances)
+   - **Antigravity OAuth login**: accounts logged in via `/login antigravity` show every quota group from the user-quota-summary RPC (`gem` / `3p` / `argon` 5h+weekly windows). In the status line the primary group is shown compactly, and other groups surface only when a window is exhausted (e.g. `3p: 100%w`)
+
 By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. Only configured providers are shown; unconfigured ones are omitted. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.
 
 ## Installation

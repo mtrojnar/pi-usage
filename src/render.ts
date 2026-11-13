@@ -9,8 +9,10 @@ import type {
 	SubscriptionUsage,
 	UsageContext,
 	UsageSnapshot,
+	VendorInstanceUsage,
 } from "./types.ts";
 import { USAGE_WIDGET_HELP } from "./config.ts";
+import { vendorProfile } from "./vendor-instances.ts";
 import {
 	clampPercent,
 	formatDuration,
@@ -281,8 +283,8 @@ function budgetText(budget: NonNullable<OpenRouterUsage["budget"]>): string {
 	return `${used}/${formatMoney(budget.limit).replace(/\.00$/, "")}`;
 }
 
-export function renderOpenRouter(usage: OpenRouterUsage, fmt: Fmt): string[] {
-	const lines = sectionLines(fmt, "OpenRouter", "accent", "");
+export function renderOpenRouter(usage: OpenRouterUsage, fmt: Fmt, title = "OpenRouter", subtitle = ""): string[] {
+	const lines = sectionLines(fmt, title, "accent", subtitle);
 	if (usage.dailySpend !== undefined) {
 		const daily = quotaWindowIsExpired({ resetAt: usage.dailyResetAt }) ? "--" : formatMoney(usage.dailySpend);
 		lines.push(`  ${fmt("dim", `today: ${daily}`)}`);
@@ -316,6 +318,71 @@ export function openRouterFooter(usage: OpenRouterUsage, fmt: Fmt): string {
 	return parts.join(fmt("dim", ","));
 }
 
+// ───────── Rendering: Vendor Instances (yaml-providers) ─────────
+
+function currencySymbol(currency: string): string {
+	return currency === "USD" ? "$" : currency === "CNY" ? "¥" : `${currency} `;
+}
+
+/** Window-style instance section (BigModel, Kimi Coding); windows render as reported. */
+export function renderVendorInstanceWindows(usage: VendorInstanceUsage, fmt: Fmt, useColor: boolean): string[] {
+	const profile = vendorProfile(usage.vendor);
+	const windows = [
+		{ label: "5h", ...usage.windows?.rolling },
+		{ label: "week", ...usage.windows?.weekly },
+		{ label: "month", ...usage.windows?.monthly },
+	];
+	const subtitle = usage.tier ? `— ${usage.label} · ${usage.tier}` : `— ${usage.label}`;
+	const lines = [
+		...sectionLines(fmt, `${usage.error ? "✳" : "✓"} ${profile.title}`, usage.error ? "warning" : "accent", subtitle),
+		...windowLines(windows, 5, fmt, useColor, " used"),
+	];
+	if (usage.error) lines.push(`  ${fmt("warning", truncate(usage.error, 120))}`);
+	return lines;
+}
+
+/** Multi-group instance section (Antigravity): one window block per quota group. */
+export function renderVendorWindowGroups(usage: VendorInstanceUsage, fmt: Fmt, useColor: boolean): string[] {
+	const profile = vendorProfile(usage.vendor);
+	const groups = usage.windowGroups ?? [];
+	const subtitle = usage.tier ? `— ${usage.label} · ${usage.tier}` : `— ${usage.label}`;
+	const lines = [
+		...sectionLines(fmt, `${usage.error ? "✳" : "✓"} ${profile.title}`, usage.error ? "warning" : "accent", subtitle),
+	];
+	const pad = Math.max(...groups.flatMap((group) => [
+			(group.windows.rolling ? `${group.tag} 5h` : "").length,
+			(group.windows.weekly ? `${group.tag} week` : "").length,
+			(group.windows.monthly ? `${group.tag} month` : "").length,
+	]), 7);
+	for (const group of groups) {
+		lines.push(...windowLines([
+			{ label: `${group.tag} 5h`, ...group.windows.rolling },
+			{ label: `${group.tag} week`, ...group.windows.weekly },
+			{ label: `${group.tag} month`, ...group.windows.monthly },
+	], pad, fmt, useColor, " used"));
+	}
+	if (usage.error) lines.push(`  ${fmt("warning", truncate(usage.error, 120))}`);
+	return lines;
+}
+
+/** Balance-style instance section (DeepSeek): money only, no quota windows. */
+export function renderVendorInstanceBalance(usage: VendorInstanceUsage, fmt: Fmt): string[] {
+	const profile = vendorProfile(usage.vendor);
+	const lines = sectionLines(fmt, `${usage.error ? "✳" : "✓"} ${profile.title}`, usage.error ? "warning" : "accent", `— ${usage.label}`);
+	const balance = usage.balance;
+	if (balance) {
+		const symbol = currencySymbol(balance.currency);
+		const color = balance.available === false ? "warning" : "accent";
+		const detail = [
+			balance.granted !== undefined ? `grant ${symbol}${balance.granted.toFixed(2)}` : undefined,
+			balance.toppedUp !== undefined ? `top-up ${symbol}${balance.toppedUp.toFixed(2)}` : undefined,
+		].filter((part): part is string => part !== undefined);
+		lines.push(`  ${fmt("dim", "balance: ")}${fmt(color, `${symbol}${balance.amount.toFixed(2)}`)}${detail.length ? fmt("dim", ` · ${detail.join(" · ")}`) : ""}`);
+	}
+	if (usage.error) lines.push(`  ${fmt("warning", truncate(usage.error, 120))}`);
+	return lines;
+}
+
 // ───────── Report Builder ─────────
 
 interface UsageReportOptions {
@@ -338,6 +405,24 @@ function buildUsageReportLines(snapshot: UsageSnapshot, opts: UsageReportOptions
 	if (snapshot.openrouter) lines.push(...renderOpenRouter(snapshot.openrouter, fmt));
 	for (const subscription of snapshot.subscriptions) {
 		if (usageHasData(subscription)) lines.push(...renderSubscriptionWindows(subscription, fmt, useColor));
+	}
+	// Vendor instances: window-style (BigModel, Kimi Coding) after the other
+	// window sections, balance/accounting-style (DeepSeek, OpenRouter) after.
+	for (const instance of snapshot.instances ?? []) {
+		if (instance.windowGroups && instance.windowGroups.length > 0) {
+			lines.push(...renderVendorWindowGroups(instance, fmt, useColor));
+			continue;
+		}
+		if (!instance.windows && !instance.error) continue;
+		lines.push(...renderVendorInstanceWindows(instance, fmt, useColor));
+	}
+	for (const instance of snapshot.instances ?? []) {
+		if (instance.vendor === "deepseek") {
+			if (!instance.balance && !instance.error) continue;
+			lines.push(...renderVendorInstanceBalance(instance, fmt));
+		} else if (instance.vendor === "openrouter" && instance.openrouter) {
+			lines.push(...renderOpenRouter(instance.openrouter, fmt, "OpenRouter", `— ${instance.label}`));
+		}
 	}
 
 	if (helpLine) {
@@ -478,6 +563,62 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 
 	if (snapshot.openrouter) {
 		addPart("OpenRouter", false, openRouterFooter(snapshot.openrouter, (color, text) => theme.fg(color, text)));
+	}
+
+	// Vendor instances: disambiguate same-vendor labels (two Kimi accounts).
+	const instanceCounts = new Map<string, number>();
+	for (const instance of snapshot.instances ?? []) {
+		instanceCounts.set(instance.vendor, (instanceCounts.get(instance.vendor) ?? 0) + 1);
+	}
+	for (const instance of snapshot.instances ?? []) {
+		const profile = vendorProfile(instance.vendor);
+		const label = (instanceCounts.get(instance.vendor) ?? 1) > 1
+			? `${profile.short}(${instance.label})`
+			: profile.short;
+		if (instance.windowGroups && instance.windowGroups.length > 0) {
+			// Primary group compact; other groups surface only when a window is
+			// exhausted, so a maxed-out Claude/GPT pool stays visible.
+			const [primary, ...rest] = instance.windowGroups;
+			const primaryParts = footerQuotaParts(theme, [
+				{ ...primary.windows.rolling, suffix: "r" },
+				{ ...primary.windows.weekly, suffix: "w" },
+				{ ...primary.windows.monthly, suffix: "m" },
+			]);
+			if (primaryParts.length === 0) continue;
+			const parts = [...primaryParts];
+			for (const group of rest) {
+				// Extra groups surface only their exhausted windows, keeping the
+				// status line compact while a maxed-out pool stays visible.
+				const exhausted = [
+					{ ...group.windows.rolling, suffix: "r" },
+					{ ...group.windows.weekly, suffix: "w" },
+					{ ...group.windows.monthly, suffix: "m" },
+				].filter((window) => (window.usedPercent ?? 0) >= 100);
+				if (exhausted.length > 0) {
+					parts.push(dim(`${group.tag}:`), ...footerQuotaParts(theme, exhausted));
+				}
+			}
+			addPart(label, false, parts.join(dim(" ")));
+		} else if (instance.windows) {
+			const quotaParts = footerQuotaParts(theme, [
+				{ ...instance.windows.rolling, suffix: "r" },
+				{ ...instance.windows.weekly, suffix: "w" },
+				{ ...instance.windows.monthly, suffix: "m" },
+			]);
+			if (quotaParts.length > 0) addPart(label, false, quotaParts.join(dim(",")));
+		} else if (instance.balance) {
+			const symbol = instance.balance.currency === "USD" ? "$" : "¥";
+			addPart(
+				label,
+				instance.balance.available === false,
+				theme.fg(
+					instance.balance.available === false ? "warning" : "accent",
+					`${symbol}${instance.balance.amount.toFixed(2)}`,
+				),
+			);
+		} else if (instance.openrouter) {
+			addPart(label, false, openRouterFooter(instance.openrouter, (color, text) => theme.fg(color, text)));
+		}
 	}
 
 	if (parts.length > 0) {

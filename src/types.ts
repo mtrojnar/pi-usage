@@ -43,6 +43,13 @@ export interface BoundProviderAuth {
 	source?: string;
 }
 
+/** API key paired with the provider base URL it was resolved for. */
+export interface BoundApiKey {
+	apiKey: string;
+	baseUrl: string;
+	source?: string;
+}
+
 export interface AnthropicAuth {
 	token?: string;
 	headers?: ProviderHeaders;
@@ -222,6 +229,51 @@ export interface OpenRouterUsage {
 	error?: string;
 }
 
+/** Balance snapshot for pay-as-you-go vendors that expose no quota windows. */
+export interface VendorInstanceBalance {
+	/** Total available balance in the account currency. */
+	amount: number;
+	currency: string;
+	/** Free granted credits, when reported. */
+	granted?: number;
+	/** Topped-up paid balance, when reported. */
+	toppedUp?: number;
+	/** Provider-side availability flag, when reported. */
+	available?: boolean;
+}
+
+export type VendorInstanceId = "bigmodel" | "kimi-coding" | "deepseek" | "openrouter" | "antigravity";
+
+/** One quota group of a multi-group vendor (Antigravity reports Gemini/3p/Argon separately). */
+export interface VendorWindowGroup {
+	/** Compact tag for status lines ("gem", "3p", "argon"). */
+	tag: string;
+	/** Full group label from the vendor ("Gemini Models"). */
+	label: string;
+	windows: UsageApiWindows;
+}
+
+/**
+ * Usage/balance of one provider instance discovered by baseUrl origin
+ * (yaml-providers registers pi providers named after the instance).
+ * Window vendors populate `windows`; balance vendors populate `balance`;
+ * OpenRouter instances reuse the existing accounting shape.
+ */
+export interface VendorInstanceUsage {
+	/** pi provider id; also the runCheck/auto-refresh key. */
+	providerId: string;
+	vendor: VendorInstanceId;
+	/** Instance name parsed from the provider id ("kimiqq", "deepseektoken"). */
+	label: string;
+	/** Plan/tier name when the vendor reports one (BigModel `data.level`). */
+	tier?: string;
+	windows?: UsageApiWindows;
+	windowGroups?: VendorWindowGroup[];
+	balance?: VendorInstanceBalance;
+	openrouter?: OpenRouterUsage;
+	error?: string;
+}
+
 /** Cached usage of every provider, as consumed by the report/widget/footer renderers. */
 export interface UsageSnapshot {
 	openrouter?: OpenRouterUsage;
@@ -230,6 +282,8 @@ export interface UsageSnapshot {
 	copilot?: CopilotUsage;
 	go?: OpenCodeGoUsage;
 	subscriptions: SubscriptionUsage[];
+	/** Vendor instances discovered by origin; absent on older snapshots. */
+	instances?: VendorInstanceUsage[];
 }
 
 export interface SelectedModel {

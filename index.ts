@@ -62,6 +62,12 @@ import {
 } from "./src/subscription-probe.ts";
 import { getSubscriptionProviderConfig, SUBSCRIPTION_PROVIDERS } from "./src/subscriptions.ts";
 import {
+	checkVendorInstance,
+	discoverAllVendorInstances,
+	type VendorInstance,
+} from "./src/vendor-instances.ts";
+import type { VendorInstanceUsage } from "./src/types.ts";
+import {
 	buildStartupUsageMessage,
 	buildUsageWidget,
 	updateFooterStatus,
@@ -207,6 +213,7 @@ export default function (pi: ExtensionAPI) {
 	let goUsage: OpenCodeGoUsage | undefined;
 	let openrouterUsage: OpenRouterUsage | undefined;
 	const subscriptionUsages = new Map<string, SubscriptionUsage>();
+	const instanceUsages = new Map<string, VendorInstanceUsage>();
 
 	// Refresh bookkeeping.
 	let isLoading = false;
@@ -259,6 +266,15 @@ export default function (pi: ExtensionAPI) {
 		for (const usage of subscriptionUsageList()) {
 			if (subscriptionHasExpiredWindows(usage)) providers.add(usage.provider);
 		}
+		for (const usage of instanceUsages.values()) {
+			const windows = [
+				usage.windows?.rolling,
+				usage.windows?.weekly,
+				usage.windows?.monthly,
+				...(usage.windowGroups ?? []).flatMap((group) => [group.windows.rolling, group.windows.weekly, group.windows.monthly]),
+			];
+			if (windows.some(quotaWindowIsExpired)) providers.add(usage.providerId);
+		}
 		for (const provider of providers) {
 			const at = expiredRefreshAt.get(provider);
 			if (at !== undefined && now - at < EXPIRED_REFRESH_DEBOUNCE_MS) providers.delete(provider);
@@ -286,6 +302,7 @@ export default function (pi: ExtensionAPI) {
 			copilot: copilotUsage,
 			go: goUsage,
 			subscriptions: subscriptionUsageList(),
+			instances: [...instanceUsages.values()],
 		};
 	}
 
@@ -562,6 +579,27 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
+			// Check vendor instances: yaml-providers registrations discovered by
+			// credential origin, plus OAuth login accounts (kimi-coding,
+			// antigravity) from pi's auth.json. Auth resolves inside each check,
+			// so multiple accounts of one vendor stay independent.
+			let vendorInstances: VendorInstance[] = [];
+			try {
+				vendorInstances = await discoverAllVendorInstances(ctx);
+			} catch { /* registry/auth.json unavailable this refresh */ }
+			for (const instance of vendorInstances) {
+				runCheck(
+					instance.providerId,
+					async (providerSignal) => checkVendorInstance(instance, ctx, providerSignal),
+					() => instanceUsages.get(instance.providerId),
+					[],
+					(result) => { instanceUsages.set(result.providerId, result); },
+					() => true,
+					undefined,
+					() => { instanceUsages.delete(instance.providerId); },
+				);
+			}
+
 			await Promise.allSettled(checks);
 
 			if (generation !== sessionGeneration) return;
@@ -757,7 +795,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── /usage command ──
 	pi.registerCommand("usage", {
-		description: "Refresh usage limits for Codex, Anthropic, Copilot, OpenCode, and compatible providers, plus OpenRouter spend, budgets, and credits",
+		description: "Refresh usage limits for Codex, Anthropic, Copilot, OpenCode, and compatible providers, plus OpenRouter spend, budgets, and credits, plus vendor instances (BigModel, Kimi Coding, DeepSeek, OpenRouter) registered via yaml-providers",
 		handler: async (_args, ctx) => {
 			await refreshUsage(ctx, "manual");
 		},
