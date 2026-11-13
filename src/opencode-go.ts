@@ -172,6 +172,7 @@ async function fetchOpenCodeGoQuota(config: OpenCodeGoQuotaConfig, signal?: Abor
 				},
 			},
 			signal,
+			{ provider: OPENCODE_GO_PROVIDER },
 		);
 
 		if (!response.ok) {
