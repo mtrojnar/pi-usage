@@ -2831,6 +2831,65 @@ describe("parseKimiUsagePayload", () => {
 		assert.equal(result?.weekly?.remainingPercent, 60);
 	});
 
+	it("derives usedPercent from remaining when used is missing", () => {
+		const result = parseKimiUsagePayload({
+			usage: { limit: "100", used: "5", remaining: "95", resetTime: "2026-10-30T15:28:19.894849Z" },
+			limits: [
+				{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "100", remaining: "100", resetTime: "2026-10-24T13:28:19.894849Z" } },
+			],
+		});
+		assert.equal(result?.rolling?.usedPercent, 0);
+		assert.equal(result?.rolling?.remainingPercent, 100);
+	});
+
+	it("maps the aggregate monthly-plan shape to 5h and month windows", () => {
+		const result = parseKimiUsagePayload({
+			usages: {
+				limit_5h: { used_ratio: 0.32, reset_time: "2026-10-24T12:00:00Z" },
+				limit_month_total: { used_ratio: 0.45, reset_time: "2026-11-01T00:00:00Z" },
+			},
+		});
+		assert.equal(result?.rolling?.usedPercent, 32);
+		assert.equal(result?.monthly?.usedPercent, 45);
+		assert.equal(result?.weekly, undefined);
+	});
+
+	it("maps the aggregate weekly-plan shape to 7d, with month_code as the fallback monthly", () => {
+		const weekly = parseKimiUsagePayload({
+			usages: {
+				limit_5h: { used_ratio: 0.1, reset_time: "2026-10-24T12:00:00Z" },
+				limit_7d: { used_ratio: 0.7, reset_time: "2026-10-28T00:00:00Z" },
+			},
+		});
+		assert.equal(weekly?.weekly?.usedPercent, 70);
+		const codeOnly = parseKimiUsagePayload({
+			usages: {
+				limit_5h: { used_ratio: 0.1, reset_time: "2026-10-24T12:00:00Z" },
+				limit_month_code: { used_ratio: 0.2, reset_time: "2026-11-01T00:00:00Z" },
+			},
+		});
+		assert.equal(codeOnly?.monthly?.usedPercent, 20);
+	});
+
+	it("prefers the aggregate shape when the detail shape contradicts it", () => {
+		const result = parseKimiUsagePayload({
+			usage: { limit: "2048", used: "214", remaining: "1834", resetTime: "2026-10-28T15:23:13Z" },
+			limits: [
+				{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "100", remaining: "100", resetTime: "2026-10-24T12:31:37Z" } },
+			],
+			usages: {
+				limit_5h: { used_ratio: 0.4612, reset_time: "2026-10-24T12:31:36Z" },
+				limit_month_total: { used_ratio: 0.4063, reset_time: "2026-11-08T00:00:00Z" },
+			},
+		});
+		// The detail 5h window claimed 100% remaining while the aggregate said
+		// 46% used (verified live); the aggregate must win.
+		assert.equal(result?.rolling?.usedPercent, 46.12);
+		assert.equal(result?.monthly?.usedPercent, 40.63);
+		// Top-level usage still fills a window the aggregate did not report.
+		assert.equal(result?.weekly?.usedPercent, 10.44921875);
+	});
+
 	it("returns undefined for unusable payloads", () => {
 		assert.equal(parseKimiUsagePayload(undefined), undefined);
 		assert.equal(parseKimiUsagePayload(null), undefined);
