@@ -97,6 +97,7 @@ import {
 } from "./src/opencode-go.ts";
 import { resolveProbeEndpoint } from "./src/probe.ts";
 import { parseKimiUsagePayload } from "./src/kimi.ts";
+import { getSubscriptionProviderConfig } from "./src/subscriptions.ts";
 import {
 	checkSubscriptionProviderUsage,
 	getSubscriptionCheckModels,
@@ -1608,6 +1609,52 @@ describe("checkSubscriptionProviderUsage with a usage endpoint", () => {
 		}, { ...auth, baseUrl: "https://proxy.example/v1" });
 		assert.equal(usage.status, "available");
 		assert.deepEqual(requests, ["https://proxy.example/v1/chat/completions"]);
+	});
+});
+
+describe("checkSubscriptionProviderUsage for Xiaomi Token Plan", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => { globalThis.fetch = realFetch; });
+	const auth = { apiKey: "tp-secret", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", source: "test" };
+	const config = getSubscriptionProviderConfig("xiaomi-token-plan-cn")!;
+	const ctx = { modelRegistry: { find: () => undefined, getProvider: () => undefined } } as unknown as Pick<UsageContext, "modelRegistry">;
+	const payload = {
+		object: "token_plan",
+		plan_code: "pro",
+		period: { start_at: "2026-09-21 23:59:59", end_at: "2027-09-21 23:59:59" },
+		quota: { total_credits: 10000000, used_credits: 1500000, remaining_credits: 8500000 },
+		auto_renew: false,
+		claw_enabled: false,
+	};
+
+	it("derives the credits URL from the dedicated base URL and sends both auth headers", async () => {
+		const requests: string[] = [];
+		globalThis.fetch = async (url, init) => {
+			requests.push(String(url));
+			const headers = new Headers(init?.headers);
+			assert.equal(headers.get("Authorization"), "Bearer tp-secret");
+			assert.equal(headers.get("api-key"), "tp-secret");
+			return Response.json(payload);
+		};
+		const usage = await checkSubscriptionProviderUsage(ctx, config, auth);
+		assert.deepEqual(requests, ["https://token-plan-cn.xiaomimimo.com/v1/platform/token_plan"]);
+		assert.equal(usage.source, "usage_api");
+		assert.equal(usage.available, true);
+		assert.equal(usage.monthly?.label, "period");
+		assert.equal(usage.monthly?.usedPercent, 15);
+		assert.equal(usage.monthly?.resetAt, Date.UTC(2027, 8, 21, 23, 59, 59) / 1000);
+		assert.equal(usage.plan?.planCode, "pro");
+		assert.equal(usage.plan?.totalCredits, 10000000);
+	});
+
+	it("renders the period window and credit detail lines", async () => {
+		globalThis.fetch = async () => Response.json(payload);
+		const usage = await checkSubscriptionProviderUsage(ctx, config, auth);
+		const report = buildStartupUsageMessage({ subscriptions: [usage] }, false);
+		assert.ok(report.includes("period"));
+		assert.ok(report.includes("15% used / 85% left"));
+		assert.ok(report.includes("credits: 1.5M/10.0M used · 8.5M left · plan pro"));
+		assert.ok(report.includes("period: 2026-09-21 → 2027-09-21 · auto-renew off"));
 	});
 });
 

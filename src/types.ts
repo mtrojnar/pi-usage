@@ -147,6 +147,8 @@ export interface AnthropicUsage {
 }
 
 export interface SubscriptionQuotaWindow {
+	/** Display label override (e.g. "period" for billing-cycle quotas). */
+	label?: string;
 	usedPercent?: number;
 	remainingPercent?: number;
 	resetAfterSeconds?: number;
@@ -165,6 +167,24 @@ export interface UsageApiWindows {
 	monthly?: SubscriptionQuotaWindow;
 }
 
+/** Credit-based plan detail reported alongside quota windows (Xiaomi Token Plan). */
+export interface SubscriptionPlanDetail {
+	planCode?: string;
+	totalCredits?: number;
+	usedCredits?: number;
+	remainingCredits?: number;
+	/** Unix seconds; the API reports UTC timestamps. */
+	periodStartAt?: number;
+	periodEndAt?: number;
+	autoRenew?: boolean;
+	clawEnabled?: boolean;
+}
+
+/** What a provider's usage endpoint parser may return: quota windows plus plan detail. */
+export interface SubscriptionUsageApiData extends UsageApiWindows {
+	plan?: SubscriptionPlanDetail;
+}
+
 export interface SubscriptionUsage {
 	provider: string;
 	label: string;
@@ -179,6 +199,7 @@ export interface SubscriptionUsage {
 	rolling?: SubscriptionQuotaWindow;
 	weekly?: SubscriptionQuotaWindow;
 	monthly?: SubscriptionQuotaWindow;
+	plan?: SubscriptionPlanDetail;
 	retryAfterSeconds?: number;
 	retryResetAt?: number;
 	source?: "usage_api" | "probe" | "headers";
