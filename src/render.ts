@@ -6,6 +6,8 @@ import type {
 	GoModelStatus,
 	OpenCodeGoUsage,
 	OpenRouterUsage,
+	SubscriptionPlanDetail,
+	SubscriptionQuotaWindow,
 	SubscriptionUsage,
 	UsageContext,
 	UsageSnapshot,
@@ -237,11 +239,48 @@ export function renderCopilotWindows(copilot: CopilotUsage, fmt: Fmt, useColor: 
 
 // ───────── Rendering: Generic Subscription Providers ─────────
 
+/** Compact credit counts for detail lines: 1500000 -> "1.5M". */
+function formatCredits(value: number): string {
+	const abs = Math.abs(value);
+	if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+	if (abs >= 1e4) return `${(value / 1e3).toFixed(1)}k`;
+	return String(Math.round(value));
+}
+
+function formatUtcDate(unixTsSec: number): string {
+	return new Date(unixTsSec * 1000).toISOString().slice(0, 10);
+}
+
+/** Credit/plan detail from a usage endpoint that reports it ("credits: 1.5M/10.0M used · ... left · plan pro"). */
+function planDetailLines(plan: SubscriptionPlanDetail | undefined, fmt: Fmt): string[] {
+	if (!plan) return [];
+	const lines: string[] = [];
+	const credits: string[] = [];
+	if (plan.usedCredits !== undefined && plan.totalCredits !== undefined) {
+		credits.push(`${formatCredits(plan.usedCredits)}/${formatCredits(plan.totalCredits)} used`);
+	} else if (plan.totalCredits !== undefined) {
+		credits.push(`${formatCredits(plan.totalCredits)} total`);
+	}
+	if (plan.remainingCredits !== undefined) credits.push(`${formatCredits(plan.remainingCredits)} left`);
+	if (plan.planCode) credits.push(`plan ${plan.planCode}`);
+	if (credits.length > 0) lines.push(`  ${fmt("dim", `credits: ${credits.join(" · ")}`)}`);
+
+	const period: string[] = [];
+	if (plan.periodStartAt !== undefined && plan.periodEndAt !== undefined) {
+		period.push(`${formatUtcDate(plan.periodStartAt)} → ${formatUtcDate(plan.periodEndAt)}`);
+	} else if (plan.periodEndAt !== undefined) {
+		period.push(`ends ${formatUtcDate(plan.periodEndAt)}`);
+	}
+	if (plan.autoRenew !== undefined) period.push(`auto-renew ${plan.autoRenew ? "on" : "off"}`);
+	if (period.length > 0) lines.push(`  ${fmt("dim", `period: ${period.join(" · ")}`)}`);
+	return lines;
+}
+
 export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: Fmt, useColor: boolean): string[] {
 	const windows: UsageWindowLine[] = [
-		{ label: "rolling", ...subscription.rolling },
-		{ label: "week", ...subscription.weekly },
-		{ label: "month", ...subscription.monthly },
+		{ ...subscription.rolling, label: subscription.rolling?.label ?? "rolling" },
+		{ ...subscription.weekly, label: subscription.weekly?.label ?? "week" },
+		{ ...subscription.monthly, label: subscription.monthly?.label ?? "month" },
 	];
 
 	return [
@@ -252,6 +291,7 @@ export function renderSubscriptionWindows(subscription: SubscriptionUsage, fmt: 
 			`— ${GO_STATUS_TEXT[subscription.status]}`,
 		),
 		...windowLines(windows, 7, fmt, useColor, " used"),
+		...planDetailLines(subscription.plan, fmt),
 		...detailLines(subscription, subscription.shortLabel, windows.some((window) => window.usedPercent !== undefined), fmt),
 	];
 }
@@ -393,6 +433,11 @@ interface FooterWindow {
 	suffix?: string;
 }
 
+/** Footer suffix: first letter of a window label override ("period" -> "p"), else the slot default. */
+function footerSuffix(window: Pick<SubscriptionQuotaWindow, "label"> | undefined, fallback: string): string {
+	return window?.label ? window.label.charAt(0) : fallback;
+}
+
 /** Compact "42%w/2h" summary for one usage window. */
 function footerWindowSummary(window: FooterWindow & { usedPercent: number }, theme: Theme): string {
 	if (quotaWindowIsExpired(window)) return theme.fg("dim", `--${window.suffix ?? ""}`);
@@ -469,9 +514,9 @@ export function updateFooterStatus(ctx: UsageContext, snapshot: UsageSnapshot): 
 			subscription.shortLabel,
 			subscription.status === "rate_limited" || subscription.status === "credits_error",
 			footerSummary(theme, [
-				{ ...subscription.rolling, suffix: "r" },
-				{ ...subscription.weekly, suffix: "w" },
-				{ ...subscription.monthly, suffix: "m" },
+				{ ...subscription.rolling, suffix: footerSuffix(subscription.rolling, "r") },
+				{ ...subscription.weekly, suffix: footerSuffix(subscription.weekly, "w") },
+				{ ...subscription.monthly, suffix: footerSuffix(subscription.monthly, "m") },
 			], subscription.status, subscription.retryAfterSeconds, subscription.retryResetAt),
 		);
 	}

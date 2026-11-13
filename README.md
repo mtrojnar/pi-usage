@@ -60,10 +60,11 @@ When pi starts up, **pi-usage** automatically:
    - Error details if credits are exhausted
    - How many documented Go models were checked before a result was found
 
-5. **OpenCode Zen and compatible subscriptions** — Supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. Kimi Coding reads its dedicated usage endpoint first, showing **5-hour rolling and weekly quota windows** without making a model request. If that endpoint fails, it falls back to the shared lightweight probe engine used by the other compatible providers. It shows:
+5. **OpenCode Zen and compatible subscriptions** — Supports OpenCode Zen (`opencode`), Kimi Coding, Z.AI, Z.AI Coding CN, and Xiaomi Token Plan regions when their API keys are configured. Kimi Coding reads its dedicated usage endpoint first, showing **5-hour rolling and weekly quota windows** without making a model request. Xiaomi Token Plan regions likewise query their dedicated **Token Plan credits endpoint** (`/v1/platform/token_plan` on the account's dedicated base URL) before probing, showing the **billing-period credit usage percentage** plus used/total/remaining credits, plan code, period range, and auto-renew status. If those endpoints fail, it falls back to the shared lightweight probe engine used by the other compatible providers. It shows:
    - Whether a provider's models are **available** or **rate limited**
    - Which low-cost model was checked
    - Rolling, weekly, and monthly quota percentages if future/provider headers expose them
+   - **Xiaomi Token Plan**: period credit percentage (`used_credits / total_credits`) and plan detail from the credits endpoint, without a model request
    - Error details for quota/auth/model failures
 
 By default, results are displayed as a startup **Usage Limits** report with a help line showing how to enable the persistent widget. Only configured providers are shown; unconfigured ones are omitted. The footer status line stays updated with compact, color-coded usage/reset summaries (`17%/4.9h`, etc.) while labels remain dimmed. When the widget is enabled, results are displayed as a **widget above the editor** with progress bars and color-coded status instead.

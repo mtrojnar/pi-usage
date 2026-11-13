@@ -69,7 +69,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts openrouter.test.ts auth.test.ts runtime-auth.test.ts",
+    "test": "tsx --test index.test.ts refresh.test.ts endpoint.test.ts openrouter.test.ts auth.test.ts runtime-auth.test.ts xiaomi.test.ts",
     "prepublishOnly": "npm run check && npm test",
     "pack:dry-run": "npm pack --dry-run"
   },

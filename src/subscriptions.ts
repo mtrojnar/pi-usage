@@ -2,6 +2,7 @@ import type { SubscriptionProbeModel } from "./types.ts";
 import type { SubscriptionProviderConfig } from "./subscription-probe.ts";
 import { KIMI_CODING_USAGE_URL } from "./config.ts";
 import { parseKimiUsagePayload } from "./kimi.ts";
+import { parseXiaomiTokenPlanPayload, xiaomiTokenPlanUsageUrl, xiaomiUsageApiAuthHeaders } from "./xiaomi.ts";
 
 function model(
 	id: string,
@@ -67,6 +68,7 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		supportedApis: ["openai-completions"],
 		preferredModelIds: ["mimo-v2-omni", "mimo-v2.5", "mimo-v2-pro"],
 		quotaHeaderPrefixes: ["xiaomi-token-plan-ams", "xiaomi"],
+		usageApi: { url: xiaomiTokenPlanUsageUrl, parse: parseXiaomiTokenPlanPayload, authHeaders: xiaomiUsageApiAuthHeaders },
 	},
 	{
 		provider: "xiaomi-token-plan-cn",
@@ -76,6 +78,7 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		supportedApis: ["openai-completions"],
 		preferredModelIds: ["mimo-v2-omni", "mimo-v2.5", "mimo-v2-pro"],
 		quotaHeaderPrefixes: ["xiaomi-token-plan-cn", "xiaomi"],
+		usageApi: { url: xiaomiTokenPlanUsageUrl, parse: parseXiaomiTokenPlanPayload, authHeaders: xiaomiUsageApiAuthHeaders },
 	},
 	{
 		provider: "xiaomi-token-plan-sgp",
@@ -85,6 +88,7 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		supportedApis: ["openai-completions"],
 		preferredModelIds: ["mimo-v2-omni", "mimo-v2.5", "mimo-v2-pro"],
 		quotaHeaderPrefixes: ["xiaomi-token-plan-sgp", "xiaomi"],
+		usageApi: { url: xiaomiTokenPlanUsageUrl, parse: parseXiaomiTokenPlanPayload, authHeaders: xiaomiUsageApiAuthHeaders },
 	},
 ];
 

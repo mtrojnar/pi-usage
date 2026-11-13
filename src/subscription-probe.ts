@@ -7,6 +7,7 @@ import type {
 	SubscriptionProbeModel,
 	SubscriptionUsage,
 	SubscriptionQuotaWindow,
+	SubscriptionUsageApiData,
 	UsageContext,
 	UsageApiWindows,
 } from "./types.ts";
@@ -36,10 +37,16 @@ import {
 // ───────── Types ─────────
 
 export interface SubscriptionUsageApiConfig {
-	/** Dedicated quota endpoint (GET, Bearer auth), tried before model probing. */
-	url: string;
+	/**
+	 * Dedicated quota endpoint (GET, auth per `authHeaders`), tried before model probing.
+	 * A function derives the URL from the credential base URL (accounts with a
+	 * dedicated host, e.g. Xiaomi Token Plan).
+	 */
+	url: string | ((baseUrl: string) => string);
 	/** Maps the endpoint's payload to generic quota windows; undefined = unusable payload. */
-	parse: (payload: unknown) => UsageApiWindows | undefined;
+	parse: (payload: unknown) => SubscriptionUsageApiData | undefined;
+	/** Credential headers for the quota endpoint; defaults to `Authorization: Bearer <key>`. */
+	authHeaders?: (apiKey: string) => Record<string, string>;
 }
 
 export interface SubscriptionProviderConfig {
@@ -255,9 +262,14 @@ export async function checkSubscriptionUsageApi(
 ): Promise<SubscriptionUsageApiResult> {
 	if (!config.usageApi) return { success: false, error: "no usage endpoint configured" };
 	try {
-		const response = await fetchSameOriginWithTimeout(config.usageApi.url, auth.baseUrl, {
+		const usageApi = config.usageApi;
+		const url = typeof usageApi.url === "function" ? usageApi.url(auth.baseUrl) : usageApi.url;
+		const authHeaders = auth.apiKey
+			? usageApi.authHeaders?.(auth.apiKey) ?? { Authorization: `Bearer ${auth.apiKey}` }
+			: {};
+		const response = await fetchSameOriginWithTimeout(url, auth.baseUrl, {
 			headers: mergeRequestHeaders({
-				...(auth.apiKey && { Authorization: `Bearer ${auth.apiKey}` }),
+				...authHeaders,
 				"Accept": "application/json",
 				"User-Agent": piUsageUserAgent(),
 			}, auth.headers),
@@ -267,10 +279,11 @@ export async function checkSubscriptionUsageApi(
 			return { success: false, error: `${config.label} usage API: ${await readErrorDetail(response, signal)}` };
 		}
 
-		const windows = config.usageApi.parse(await readResponseJson(response, signal));
-		if (!windows) {
+		const parsed = usageApi.parse(await readResponseJson(response, signal));
+		if (!parsed) {
 			return { success: false, error: `${config.label} usage API: no usage windows` };
 		}
+		const windows: UsageApiWindows = { rolling: parsed.rolling, weekly: parsed.weekly, monthly: parsed.monthly };
 
 		const exhausted = [windows.rolling, windows.weekly, windows.monthly]
 			.some((window) => (window?.usedPercent ?? 0) >= 100 || (window?.remainingPercent ?? 100) <= 0);
@@ -286,6 +299,7 @@ export async function checkSubscriptionUsageApi(
 				rolling: windows.rolling,
 				weekly: windows.weekly,
 				monthly: windows.monthly,
+				...(parsed.plan && { plan: parsed.plan }),
 				source: "usage_api",
 			},
 		};
