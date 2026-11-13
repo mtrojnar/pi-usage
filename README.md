@@ -292,6 +292,10 @@ Claude footer chunks are the 5-hour then weekly window (no suffix, like Codex). 
 
 ## How It Works
 
+### Proxy Routing
+
+All quota and usage checks go through the helpers in `src/http.ts`. When the [pi-proxy-router](https://github.com/leench/pi-proxy-router) extension is loaded in the same session, those requests are routed through the proxy configured for the provider (`models` rules by credential origin, plus the provider's `auth` rule for OpenCode Go dashboard requests). `/allproxy` and `/noproxy` are honored, failures on the routed path are annotated with the proxy in use (e.g. ` (via http://proxy.example:7890)`), and when pi-proxy-router is absent or no rule matches, checks use the default direct pipeline. No configuration is needed here; routing follows `~/.pi/agent/proxy-router.json` automatically.
+
 ### Codex Rate Limits
 
 pi-usage first calls `https://chatgpt.com/backend-api/wham/usage` with the effective OAuth token pi resolves for legacy `openai-codex` auth. This returns the plan type, available usage windows, reset times, and credits without making a model request. Windows are labeled by their reported duration because some plans expose only a weekly window in the API's primary slot.
