@@ -74,8 +74,8 @@ export const SUBSCRIPTION_PROVIDERS: SubscriptionProviderConfig[] = [
 		shortLabel: "Xiaomi CN",
 		envKeys: ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
 		supportedApis: ["openai-completions"],
-		preferredModelIds: ["mimo-v2-omni", "mimo-v2.5", "mimo-v2-pro"],
-		quotaHeaderPrefixes: ["xiaomi-token-plan-cn", "xiaomi"],
+		preferredModelIds: ["mimo-v2-omni", "mimo-v2.5", "mimo-v2.6-pro"],
+		quotaHeaderPrefixes: ["xiaomi-token-plan-cn", "mi"],
 	},
 	{
 		provider: "xiaomi-token-plan-sgp",
